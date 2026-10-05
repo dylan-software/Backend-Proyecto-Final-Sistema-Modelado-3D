@@ -9,3 +9,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+async def health():
+    return {"status": "ok"}
