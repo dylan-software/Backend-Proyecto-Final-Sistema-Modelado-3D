@@ -11,5 +11,6 @@ app.add_middleware(
 )
 
 
+@app.get("/")
 async def health():
     return {"status": "ok"}
