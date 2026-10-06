@@ -5,3 +5,4 @@ sqlalchemy
 asyncpg
 scipy
 scikit-learn
+numpy
