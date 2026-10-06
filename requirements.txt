@@ -4,3 +4,4 @@ httpx
 sqlalchemy
 asyncpg
 scipy
+scikit-learn
