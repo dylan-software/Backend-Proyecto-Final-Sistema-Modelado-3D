@@ -3,6 +3,12 @@ import asyncio
 import numpy as np
 from sklearn.linear_model import LinearRegression, RANSACRegressor
 
+# With six similar surfaces only ~1% of random 3-point samples land on one plane, so the
+# default 100 trials often miss walls. Fitting on a bounded sample keeps the cost flat
+# for dense scans; every point is still scored against the resulting plane.
+RANSAC_TRIALS = 300
+MAX_FIT_POINTS = 5000
+
 
 async def clean_point_cloud(points, residual_threshold=0.02, max_planes=6, min_inliers=50):
     """Separate the planar surfaces of a scanned room from background noise.
@@ -15,16 +21,21 @@ async def clean_point_cloud(points, residual_threshold=0.02, max_planes=6, min_i
     return await asyncio.to_thread(_fit_planes, cloud, residual_threshold, max_planes, min_inliers)
 
 
-def _fit_axis_plane(cloud, axis, residual_threshold):
+def _fit_axis_plane(cloud, axis, residual_threshold, rng):
     """Fit coord[axis] = a*u + b*v + c with RANSAC, where u and v are the other two axes."""
     others = [i for i in range(3) if i != axis]
+    sample = cloud
+    if len(cloud) > MAX_FIT_POINTS:
+        sample = cloud[rng.choice(len(cloud), MAX_FIT_POINTS, replace=False)]
     ransac = RANSACRegressor(
         LinearRegression(),
         min_samples=3,
         residual_threshold=residual_threshold,
+        max_trials=RANSAC_TRIALS,
         random_state=0,
     )
-    ransac.fit(cloud[:, others], cloud[:, axis])
+    ransac.fit(sample[:, others], sample[:, axis])
+    inliers = np.abs(cloud[:, axis] - ransac.predict(cloud[:, others])) <= residual_threshold
     a, b = ransac.estimator_.coef_
     c = ransac.estimator_.intercept_
     normal = np.zeros(3)
@@ -32,7 +43,7 @@ def _fit_axis_plane(cloud, axis, residual_threshold):
     normal[others[0]] = -a
     normal[others[1]] = -b
     norm = np.linalg.norm(normal)
-    return ransac.inlier_mask_, normal / norm, c / norm
+    return inliers, normal / norm, c / norm
 
 
 def _classify(normal):
@@ -45,6 +56,7 @@ def _classify(normal):
 
 
 def _fit_planes(cloud, residual_threshold, max_planes, min_inliers):
+    rng = np.random.default_rng(0)
     remaining = cloud
     planes = []
     kept = []
@@ -52,7 +64,7 @@ def _fit_planes(cloud, residual_threshold, max_planes, min_inliers):
         # Walls cannot be written as y = f(x, z), so try each axis as the dependent one
         # and keep the plane that explains the most points.
         mask, normal, offset = max(
-            (_fit_axis_plane(remaining, axis, residual_threshold) for axis in range(3)),
+            (_fit_axis_plane(remaining, axis, residual_threshold, rng) for axis in range(3)),
             key=lambda fit: fit[0].sum(),
         )
         if mask.sum() < min_inliers:
