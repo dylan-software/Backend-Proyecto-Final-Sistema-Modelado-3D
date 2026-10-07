@@ -76,3 +76,16 @@ class OctreeNode:
         for point in points:
             root.insert(point)
         return root
+
+    def query_box(self, box_min, box_max):
+        """Return the stored points inside the axis-aligned box [box_min, box_max]."""
+        box_min = np.asarray(box_min, dtype=float)
+        box_max = np.asarray(box_max, dtype=float)
+        if np.any(box_max < self.center - self.half_size) or np.any(box_min > self.center + self.half_size):
+            return []
+        if self.is_leaf():
+            return [p for p in self.points if np.all(p >= box_min) and np.all(p <= box_max)]
+        found = []
+        for child in self.children:
+            found.extend(child.query_box(box_min, box_max))
+        return found
