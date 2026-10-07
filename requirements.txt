@@ -1,7 +1,7 @@
 fastapi
 uvicorn[standard]
 httpx
-sqlalchemy
+sqlalchemy[asyncio]
 asyncpg
 scipy
 scikit-learn
