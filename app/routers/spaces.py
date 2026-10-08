@@ -18,3 +18,5 @@ from app.schemas.space import (
     RoomOut,
 )
 from app.services.omniroute import OmniRouteError, suggest_layout
+
+router = APIRouter(prefix="/api/v1/spaces", tags=["spaces"])
