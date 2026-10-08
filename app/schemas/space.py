@@ -1,0 +1,58 @@
+from pydantic import BaseModel, Field
+
+Point = tuple[float, float, float]
+
+
+class AnalyzeRequest(BaseModel):
+    nombre: str = Field(min_length=1, max_length=120)
+    estilo: str = Field("moderno", min_length=1, max_length=60)
+    instrucciones: str | None = Field(None, max_length=1000)
+    puntos: list[Point] = Field(min_length=3)
+    # Optional measured dimensions; any that are missing are taken from the scan.
+    ancho: float | None = Field(None, gt=0)
+    alto: float | None = Field(None, gt=0)
+    profundidad: float | None = Field(None, gt=0)
+
+
+class FurnitureProposal(BaseModel):
+    nombre: str = Field(min_length=1, max_length=120)
+    ancho: float = Field(gt=0)
+    alto: float = Field(gt=0)
+    profundidad: float = Field(gt=0)
+    posicion_x: float
+    posicion_y: float = 0.0
+    posicion_z: float
+
+
+class FurnitureOut(FurnitureProposal):
+    id: int
+
+
+class DiscardedFurniture(BaseModel):
+    nombre: str
+    motivo: str
+
+
+class Surface(BaseModel):
+    tipo: str
+    normal: list[float]
+    offset: float
+    puntos: int
+
+
+class RoomOut(BaseModel):
+    id: int
+    nombre: str
+    ancho: float
+    alto: float
+    profundidad: float
+
+
+class AnalyzeResponse(BaseModel):
+    habitacion: RoomOut
+    descripcion: str
+    muebles: list[FurnitureOut]
+    descartados: list[DiscardedFurniture]
+    superficies: list[Surface]
+    origen: Point
+    ruido: int
