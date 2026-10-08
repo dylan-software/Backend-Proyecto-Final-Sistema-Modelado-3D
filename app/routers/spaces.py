@@ -20,3 +20,15 @@ from app.schemas.space import (
 from app.services.omniroute import OmniRouteError, suggest_layout
 
 router = APIRouter(prefix="/api/v1/spaces", tags=["spaces"])
+
+def get_layout_suggester():
+    return suggest_layout
+
+
+@router.post("/analyze")
+async def analyze_space(
+    body: AnalyzeRequest,
+    session: AsyncSession = Depends(get_session),
+    suggester=Depends(get_layout_suggester),
+):
+    raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, "Análisis en construcción")
