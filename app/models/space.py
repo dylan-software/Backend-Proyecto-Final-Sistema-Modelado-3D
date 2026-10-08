@@ -28,6 +28,9 @@ class MuebleSugerido(Base):
         ForeignKey("habitaciones.id", ondelete="CASCADE"), index=True
     )
     nombre: Mapped[str] = mapped_column(String(120))
+    ancho: Mapped[float] = mapped_column(Float)
+    alto: Mapped[float] = mapped_column(Float)
+    profundidad: Mapped[float] = mapped_column(Float)
     posicion_x: Mapped[float] = mapped_column(Float)
     posicion_y: Mapped[float] = mapped_column(Float)
     posicion_z: Mapped[float] = mapped_column(Float)
