@@ -38,7 +38,7 @@ def _furniture_box(item):
     return box_min, box_max
 
 
-@router.post("/analyze")
+@router.post("/analyze", response_model=AnalyzeResponse, status_code=status.HTTP_201_CREATED)
 async def analyze_space(
     body: AnalyzeRequest,
     session: AsyncSession = Depends(get_session),
@@ -105,4 +105,18 @@ async def analyze_space(
         await session.rollback()
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "No se pudo guardar en la base de datos.") from exc
 
-    raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, "Análisis en construcción")
+    return AnalyzeResponse(
+        habitacion=RoomOut(
+            id=room.id,
+            nombre=room.nombre,
+            ancho=room.ancho,
+            alto=room.alto,
+            profundidad=room.profundidad,
+        ),
+        descripcion=proposal.get("descripcion", ""),
+        muebles=[FurnitureOut(id=row.id, **item.model_dump()) for row, item in zip(room.muebles, accepted)],
+        descartados=discarded,
+        superficies=ransac["planos"],
+        origen=tuple(origin.tolist()),
+        ruido=ransac["ruido"],
+    )
