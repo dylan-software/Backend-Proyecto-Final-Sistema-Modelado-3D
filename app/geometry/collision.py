@@ -3,10 +3,13 @@ from scipy.spatial import cKDTree
 
 from app.utils.typing import SpatialIndex
 
+# Floating-point slack in meters: smaller overlaps or overshoots are rounding error, not collisions.
+EPSILON = 1e-9
+
 
 def boxes_overlap(a_min, a_max, b_min, b_max):
     """Two axis-aligned boxes intersect when their intervals overlap on all three axes."""
-    return bool(np.all(a_min < b_max) and np.all(b_min < a_max))
+    return bool(np.all(a_min < b_max - EPSILON) and np.all(b_min < a_max - EPSILON))
 
 
 def check_bounding_box_collision(
@@ -23,7 +26,7 @@ def check_bounding_box_collision(
     box_max = np.asarray(box_max, dtype=float)
     room_dims = np.asarray(room_dims, dtype=float)
 
-    if np.any(box_min < 0) or np.any(box_max > room_dims):
+    if np.any(box_min < -EPSILON) or np.any(box_max > room_dims + EPSILON):
         return True
 
     obstacles = [(np.asarray(lo, dtype=float), np.asarray(hi, dtype=float)) for lo, hi in obstacles]
