@@ -9,3 +9,13 @@ T = TypeVar("T")
 
 # A 3-component float vector (x, y, z) in meters.
 Vector3 = NDArray[np.float64]
+
+
+@runtime_checkable
+class SpatialIndex(Protocol):
+    """Contract the collision validator relies on: any structure that stores points and returns
+    the ones inside an axis-aligned box (octree, k-d tree, uniform grid...)."""
+
+    def insert(self, point: ArrayLike) -> bool: ...
+
+    def query_box(self, box_min: ArrayLike, box_max: ArrayLike) -> Sequence[object]: ...
