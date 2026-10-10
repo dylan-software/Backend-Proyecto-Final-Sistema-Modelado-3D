@@ -6,3 +6,4 @@ asyncpg
 scipy
 scikit-learn
 numpy
+opencv-python-headless
