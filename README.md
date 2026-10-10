@@ -108,3 +108,27 @@ Esta poda es lo que la hace más rápida que recorrer la nube completa.
 existentes, objetos y ruido) se insertan en un octree. Para cada mueble propuesto por la IA se
 pregunta cuántos de esos puntos caen dentro de su caja; si son 5 o más, hay un objeto real en ese
 lugar y el mueble se descarta.
+
+### Complejidad del Octree
+
+Sea `n` el número de puntos, `c` la capacidad de una hoja (8), `D` la profundidad máxima (8) y `k`
+el número de puntos devueltos por una búsqueda.
+
+| Operación | Caso típico (puntos repartidos) | Peor caso | Motivo |
+|---|---|---|---|
+| Elegir octante (`_child_for`) | O(1) | O(1) | Tres comparaciones. |
+| `insert` | O(log₈ n) | O(D + c) | Un descenso por nivel; dividir una hoja reparte como mucho `c` puntos. |
+| `from_points` (construcción) | O(n log n) | O(n · D) | `n` inserciones. |
+| `query_box` | O(log n + k) | O(n) | La poda descarta subárboles; si la caja cubre todo o los puntos se amontonan en hojas de profundidad `D`, se recorren todos. |
+| Memoria | O(n) | O(n + 8^D) | Cada punto se guarda una vez; los nodos internos crecen con la profundidad usada. |
+
+`D` es una constante, así que el peor caso de `insert` está acotado: el árbol nunca crece sin
+límite aunque muchos puntos caigan en el mismo sitio (esas hojas simplemente admiten más de `c`).
+
+Comparación con la alternativa ingenua: validar `m` muebles recorriendo toda la nube cuesta
+O(m · n); con el octree cuesta O(n log n) para construirlo una vez más O(m · (log n + k)) para las
+consultas.
+
+Para los muebles ya colocados se usa además un `cKDTree` de SciPy sobre sus centros
+(construcción O(m log m)): solo los muebles cuya esfera envolvente alcanza la del nuevo se comparan
+con la prueba exacta de cajas.
