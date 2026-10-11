@@ -7,3 +7,4 @@ scipy
 scikit-learn
 numpy
 opencv-python-headless
+pydantic-settings
