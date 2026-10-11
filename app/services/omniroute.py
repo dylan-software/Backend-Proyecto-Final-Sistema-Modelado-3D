@@ -10,6 +10,8 @@ SYSTEM_PROMPT = (
     "Coordenadas en metros: x en [0, ancho], y hacia arriba en [0, alto], z en [0, profundidad]. "
     "posicion_x y posicion_z son el centro del mueble en planta; posicion_y es la altura de su base "
     "(0 = suelo). Ningún mueble puede salirse de la habitación ni solaparse con otro. "
+    "Si recibes contexto_visual (brillo de 0 a 1 y colores dominantes de una foto de la habitación), "
+    "elige mobiliario y colores que armonicen con él. "
     'Responde solo con JSON: {"descripcion": str, "muebles": [{"nombre": str, "ancho": float, '
     '"alto": float, "profundidad": float, "posicion_x": float, "posicion_y": float, "posicion_z": float}]}'
 )
@@ -46,7 +48,7 @@ async def chat_completion(messages, temperature=0.4, timeout=60.0):
         raise OmniRouteError("unexpected response shape") from exc
 
 
-async def suggest_layout(dims, estilo, instrucciones=None, superficies=()):
+async def suggest_layout(dims, estilo, instrucciones=None, superficies=(), contexto_visual=None):
     """Ask the model for a furniture layout. Returns {"descripcion": str, "muebles": [dict, ...]}."""
     ancho, alto, profundidad = dims
     request = {
@@ -54,6 +56,7 @@ async def suggest_layout(dims, estilo, instrucciones=None, superficies=()):
         "estilo": estilo,
         "instrucciones": instrucciones,
         "superficies_detectadas": [s["tipo"] for s in superficies],
+        "contexto_visual": contexto_visual,
     }
     content = await chat_completion(
         [
