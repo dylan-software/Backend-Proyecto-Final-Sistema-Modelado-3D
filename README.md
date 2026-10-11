@@ -28,6 +28,7 @@ servidor sigue atendiendo otras peticiones mientras calcula.
 ```
 app/
 ├── main.py                 instancia FastAPI, CORS y creación de tablas al arrancar
+├── config.py               configuración centralizada (pydantic-settings)
 ├── database/connection.py  motor y fábrica de sesiones asíncronas
 ├── models/space.py         tablas habitaciones y muebles_sugeridos
 ├── schemas/space.py        esquemas Pydantic de entrada y salida
@@ -44,11 +45,14 @@ app/
 python -m venv .venv
 .venv\Scripts\activate            # Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --env-file .env
+uvicorn app.main:app --reload
 ```
 
 Documentación interactiva en <http://localhost:8000/docs>. Para las pruebas:
 `pip install -r requirements-dev.txt` y luego `pytest app/tests`.
+
+Configuración (`app/config.py`): cada variable se lee del entorno o, si existe, del archivo `.env`
+de esta carpeta.
 
 | Variable | Descripción |
 |---|---|
@@ -56,6 +60,7 @@ Documentación interactiva en <http://localhost:8000/docs>. Para las pruebas:
 | `OMNIROUTE_BASE_URL` | Por defecto `http://localhost:20128/v1`. |
 | `OMNIROUTE_API_KEY` | Clave de OmniRoute. |
 | `OMNIROUTE_MODEL` | Modelo o combo configurado en OmniRoute. |
+| `OMNIROUTE_TIMEOUT` | Segundos de espera por respuesta (60 por defecto). |
 
 ## Endpoints
 

@@ -1,9 +1,8 @@
 import json
-import os
 
 import httpx
 
-DEFAULT_BASE_URL = "http://localhost:20128/v1"
+from app.config import get_settings
 
 SYSTEM_PROMPT = (
     "Eres un diseñador de interiores. Propón mobiliario para una habitación rectangular. "
@@ -21,18 +20,19 @@ class OmniRouteError(Exception):
     """Raised when OmniRoute is not configured or returns an unusable answer."""
 
 
-async def chat_completion(messages, temperature=0.4, timeout=60.0):
+async def chat_completion(messages, temperature=0.4):
     """Send an OpenAI-compatible chat completion request to OmniRoute and return the reply text."""
-    base_url = os.getenv("OMNIROUTE_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
-    api_key = os.getenv("OMNIROUTE_API_KEY")
-    model = os.getenv("OMNIROUTE_MODEL")
+    settings = get_settings()
+    base_url = settings.omniroute_base_url.rstrip("/")
+    api_key = settings.omniroute_api_key
+    model = settings.omniroute_model
     if not api_key:
         raise OmniRouteError("OMNIROUTE_API_KEY is not set")
     if not model:
         raise OmniRouteError("OMNIROUTE_MODEL is not set")
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=settings.omniroute_timeout) as client:
             response = await client.post(
                 f"{base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
