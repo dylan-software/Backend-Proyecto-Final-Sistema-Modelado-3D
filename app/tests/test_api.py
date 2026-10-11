@@ -1,3 +1,6 @@
+import base64
+
+import cv2
 import httpx
 import numpy as np
 import pytest
@@ -144,3 +147,50 @@ async def test_analyze_reports_omniroute_failure(client, db_sessions):
 
     assert response.status_code == 502
     assert "OMNIROUTE_API_KEY" in response.json()["detail"]
+
+
+def encoded_photo(bgr, width=64, height=48):
+    """PNG data URL: three quarters in the given color, the left quarter white."""
+    image = np.zeros((height, width, 3), np.uint8)
+    image[:] = bgr
+    image[:, : width // 4] = (255, 255, 255)
+    ok, png = cv2.imencode(".png", image)
+    assert ok
+    return "data:image/png;base64," + base64.b64encode(png.tobytes()).decode()
+
+
+async def test_analyze_reads_room_photo(client, db_sessions):
+    received = {}
+
+    async def capturing_suggester(dims, estilo, instrucciones, superficies, contexto_visual=None):
+        received["contexto_visual"] = contexto_visual
+        return {"descripcion": "", "muebles": []}
+
+    app.dependency_overrides[get_layout_suggester] = lambda: capturing_suggester
+    try:
+        response = await client.post(
+            "/api/v1/spaces/analyze",
+            json={"nombre": "Sala", "puntos": room_scan().tolist(), "imagen": encoded_photo((0, 0, 200))},
+        )
+    finally:
+        app.dependency_overrides.pop(get_layout_suggester, None)
+
+    assert response.status_code == 201, response.text
+    visual = response.json()["contexto_visual"]
+    assert [c["hex"] for c in visual["colores"]] == ["#c80000", "#ffffff"]
+    assert [c["proporcion"] for c in visual["colores"]] == [0.75, 0.25]
+    assert received["contexto_visual"] == visual
+
+
+async def test_analyze_rejects_invalid_photo(client, db_sessions):
+    app.dependency_overrides[get_layout_suggester] = lambda: fake_suggester
+    try:
+        response = await client.post(
+            "/api/v1/spaces/analyze",
+            json={"nombre": "Sala", "puntos": room_scan().tolist(), "imagen": "esto no es una imagen"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_layout_suggester, None)
+
+    assert response.status_code == 422
+    assert "Imagen inválida" in response.json()["detail"]
