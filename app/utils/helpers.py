@@ -41,3 +41,29 @@ async def load_image_matrix(encoded: str, max_side: int = MAX_IMAGE_SIDE) -> np.
         raise ImageDecodeError("the image is not valid base64") from exc
     return await asyncio.to_thread(decode_image, data, max_side)
 
+
+def summarize_image(image: np.ndarray, colors: int = 4) -> dict:
+    """Mean brightness (0-1) and the dominant colors of a BGR image, found with k-means."""
+    pixels = image.reshape(-1, 3).astype(np.float32)
+    k = min(colors, len(pixels))
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+    _, labels, centers = cv2.kmeans(pixels, k, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
+    counts = np.bincount(labels.ravel(), minlength=k)
+
+    # Images with fewer distinct colors than k produce duplicate centers; merge them by hex code.
+    shares = {}
+    for center, count in zip(centers, counts):
+        if count == 0:
+            continue
+        blue, green, red = (int(v) for v in np.clip(np.rint(center), 0, 255))
+        hex_code = f"#{red:02x}{green:02x}{blue:02x}"
+        shares[hex_code] = shares.get(hex_code, 0) + int(count)
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    return {
+        "brillo": round(float(gray.mean()) / 255, 3),
+        "colores": [
+            {"hex": hex_code, "proporcion": round(count / len(pixels), 3)}
+            for hex_code, count in sorted(shares.items(), key=lambda item: item[1], reverse=True)
+        ],
+    }
