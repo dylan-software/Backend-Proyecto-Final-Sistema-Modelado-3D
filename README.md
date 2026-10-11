@@ -16,6 +16,7 @@ mobiliario, descarta los muebles que no caben o chocan con algo y guarda el resu
 | **SQLAlchemy 2 (async) + asyncpg** | Acceso a PostgreSQL sin bloquear el bucle de eventos. |
 | **NumPy / SciPy** | Álgebra vectorial y `cKDTree` para búsquedas de proximidad. |
 | **scikit-learn** | `RANSACRegressor` para ajustar planos robustos. |
+| **OpenCV** | Decodificar la foto opcional de la habitación y extraer su paleta con k-means. |
 | **httpx** | Cliente HTTP asíncrono hacia OmniRoute. |
 | **pytest + aiosqlite** | Pruebas automatizadas con una base SQLite en memoria. |
 
@@ -32,6 +33,7 @@ app/
 ├── schemas/space.py        esquemas Pydantic de entrada y salida
 ├── geometry/               octree, colisiones, filtro RANSAC y endpoints /geometry
 ├── services/omniroute.py   cliente de OmniRoute
+├── utils/                  tipos compartidos (Protocol, Generic) y ayudas de imagen
 ├── routers/spaces.py       pipeline POST /api/v1/spaces/analyze
 └── tests/                  pruebas unitarias y de integración
 ```
@@ -69,6 +71,11 @@ Petición mínima de `/api/v1/spaces/analyze`:
 ```json
 { "nombre": "Sala", "estilo": "nordico", "puntos": [[0.1, 0.0, 2.3], [0.4, 0.0, 1.9], "..."] }
 ```
+
+Campos opcionales: `instrucciones`, `ancho`/`alto`/`profundidad` (si ya se conocen las medidas) e
+`imagen`, una foto de la habitación en base64 o como *data URL*. Con la foto, OpenCV calcula el
+brillo y los colores dominantes, que se envían a OmniRoute para que la propuesta armonice con la
+habitación y se devuelven en `contexto_visual`.
 
 Convención de coordenadas: metros, eje **y hacia arriba**. La habitación ocupa
 `[0, ancho] × [0, alto] × [0, profundidad]`; el origen es la esquina mínima de las superficies
@@ -177,9 +184,11 @@ grandes. Unos 2–3 s para una habitación de ~2 000 puntos, ejecutados en un hi
  Navegador (frontend)               Backend FastAPI                              Servicios externos
  ────────────────────               ───────────────                              ──────────────────
  POST /api/v1/spaces/analyze ──▶ routers/spaces.analyze_space
- { nombre, estilo, puntos }            │
+ { nombre, estilo, puntos, imagen? }   │
                                        ├─▶ geometry/ransac_filter ── planos + puntos residuales
                                        │       (hilo de trabajo)
+                                       ├─▶ utils/helpers (OpenCV) ── brillo + colores de la foto
+                                       │       (en paralelo, solo si se envía imagen)
                                        │
                                        ├─▶ services/omniroute ── POST /v1/chat/completions ──▶ OmniRoute :20128
                                        │       ◀──────── JSON { descripcion, muebles[] } ─────────  │
@@ -191,9 +200,10 @@ grandes. Unos 2–3 s para una habitación de ~2 000 puntos, ejecutados en un hi
                                        │       habitaciones 1 ── N muebles_sugeridos
                                        ▼
  201 { habitacion, muebles,  ◀── AnalyzeResponse
-       descartados, superficies }
+       descartados, superficies,
+       contexto_visual }
 ```
 
 Errores: `502` si OmniRoute falla o responde algo que no es JSON válido, `503` si no se puede
-guardar en la base de datos y `422` si la petición es inválida o no se pueden deducir las
+guardar en la base de datos y `422` si la petición o la imagen son inválidas o no se pueden deducir las
 dimensiones de la habitación.
