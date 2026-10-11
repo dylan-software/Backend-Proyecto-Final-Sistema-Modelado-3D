@@ -40,4 +40,5 @@ app.include_router(spaces_router)
 
 @app.get("/")
 async def health():
+    """Liveness probe for the frontend and the hosting platform."""
     return {"status": "ok"}
