@@ -49,7 +49,8 @@ uvicorn app.main:app --reload
 ```
 
 Documentación interactiva en <http://localhost:8000/docs>. Para las pruebas:
-`pip install -r requirements-dev.txt` y luego `pytest app/tests`.
+`pip install -r requirements-dev.txt`, luego `pytest` (pruebas) y `ruff check app` (estilo e
+importaciones).
 
 Configuración (`app/config.py`): cada variable se lee del entorno o, si existe, del archivo `.env`
 de esta carpeta.

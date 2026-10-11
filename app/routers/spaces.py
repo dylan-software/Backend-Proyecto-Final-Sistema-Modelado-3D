@@ -131,7 +131,9 @@ async def analyze_space(
             item = FurnitureProposal.model_validate(raw)
         except ValidationError:
             name = raw.get("nombre") if isinstance(raw, dict) else None
-            discarded.append(DiscardedFurniture(nombre=str(name or "desconocido"), motivo="datos incompletos"))
+            discarded.append(
+                DiscardedFurniture(nombre=str(name or "desconocido"), motivo="datos incompletos")
+            )
             continue
         box_min, box_max = _furniture_box(item)
         if check_bounding_box_collision(
@@ -155,7 +157,9 @@ async def analyze_space(
         await session.commit()
     except (SQLAlchemyError, OSError) as exc:
         await session.rollback()
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "No se pudo guardar en la base de datos.") from exc
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "No se pudo guardar en la base de datos."
+        ) from exc
 
     return AnalyzeResponse(
         habitacion=RoomOut(
@@ -166,7 +170,10 @@ async def analyze_space(
             profundidad=room.profundidad,
         ),
         descripcion=proposal.get("descripcion", ""),
-        muebles=[FurnitureOut(id=row.id, **item.model_dump()) for row, item in zip(room.muebles, accepted)],
+        muebles=[
+            FurnitureOut(id=row.id, **item.model_dump())
+            for row, item in zip(room.muebles, accepted, strict=True)
+        ],
         descartados=discarded,
         superficies=ransac["planos"],
         origen=tuple(origin.tolist()),

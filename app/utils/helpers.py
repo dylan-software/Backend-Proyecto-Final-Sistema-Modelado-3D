@@ -52,7 +52,7 @@ def summarize_image(image: np.ndarray, colors: int = 4) -> dict:
 
     # Images with fewer distinct colors than k produce duplicate centers; merge them by hex code.
     shares = {}
-    for center, count in zip(centers, counts):
+    for center, count in zip(centers, counts, strict=True):
         if count == 0:
             continue
         blue, green, red = (int(v) for v in np.clip(np.rint(center), 0, 255))
