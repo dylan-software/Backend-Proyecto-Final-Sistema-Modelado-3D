@@ -91,7 +91,7 @@ async def analyze_space(
     try:
         ransac, visual = await asyncio.gather(clean_point_cloud(body.puntos), _visual_context(body.imagen))
     except ImageDecodeError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Imagen inválida: {exc}") from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Imagen inválida: {exc}") from exc
     surfaces = np.asarray(ransac["puntos_limpios"], dtype=float).reshape(-1, 3)
     if len(surfaces) == 0:
         surfaces = np.asarray(body.puntos, dtype=float)
@@ -103,7 +103,7 @@ async def analyze_space(
     )
     if np.any(dims <= 0):
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             "No se pudieron deducir las dimensiones de la habitación; envía ancho, alto y profundidad.",
         )
 
