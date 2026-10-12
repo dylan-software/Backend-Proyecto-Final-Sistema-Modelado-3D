@@ -21,8 +21,21 @@ from app.services.omniroute import OmniRouteError, suggest_layout
 
 router = APIRouter(prefix="/api/v1/spaces", tags=["spaces"])
 
+# A box must contain at least this many leftover scan points to count as hitting a real object;
+# fewer are treated as sensor noise.
+MIN_OBSTACLE_POINTS = 5
+
+
 def get_layout_suggester():
     return suggest_layout
+
+
+def _furniture_box(item):
+    """posicion_x/z is the center of the footprint and posicion_y the height of the base."""
+    half_w, half_d = item.ancho / 2, item.profundidad / 2
+    box_min = np.array([item.posicion_x - half_w, item.posicion_y, item.posicion_z - half_d])
+    box_max = np.array([item.posicion_x + half_w, item.posicion_y + item.alto, item.posicion_z + half_d])
+    return box_min, box_max
 
 
 @router.post("/analyze")
@@ -58,5 +71,23 @@ async def analyze_space(
         proposal = await suggester(tuple(dims.tolist()), body.estilo, body.instrucciones, ransac["planos"])
     except OmniRouteError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"OmniRoute: {exc}") from exc
+
+    # 3. Keep only furniture that fits in the room without hitting walls, objects or other furniture.
+    accepted, discarded, placed = [], [], []
+    for raw in proposal["muebles"]:
+        try:
+            item = FurnitureProposal.model_validate(raw)
+        except ValidationError:
+            name = raw.get("nombre") if isinstance(raw, dict) else None
+            discarded.append(DiscardedFurniture(nombre=str(name or "desconocido"), motivo="datos incompletos"))
+            continue
+        box_min, box_max = _furniture_box(item)
+        if check_bounding_box_collision(
+            box_min, box_max, dims, obstacles=placed, scan=scan, min_scan_points=MIN_OBSTACLE_POINTS
+        ):
+            discarded.append(DiscardedFurniture(nombre=item.nombre, motivo="colisión"))
+            continue
+        placed.append((box_min, box_max))
+        accepted.append(item)
 
     raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, "Análisis en construcción")
