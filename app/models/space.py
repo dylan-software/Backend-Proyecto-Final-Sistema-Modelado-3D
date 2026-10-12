@@ -36,3 +36,25 @@ class MuebleSugerido(Base):
     posicion_z: Mapped[float] = mapped_column(Float)
 
     habitacion: Mapped["Habitacion"] = relationship(back_populates="muebles")
+
+
+class Categoria(Base):
+    __tablename__ = "categorias"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    nombre: Mapped[str] = mapped_column(String(60), unique=True)
+
+    muebles: Mapped[list["MuebleCatalogo"]] = relationship(back_populates="categoria")
+
+
+class MuebleCatalogo(Base):
+    __tablename__ = "muebles_catalogo"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    categoria_id: Mapped[int] = mapped_column(ForeignKey("categorias.id"), index=True)
+    nombre: Mapped[str] = mapped_column(String(120))
+    ancho: Mapped[float] = mapped_column(Float)
+    alto: Mapped[float] = mapped_column(Float)
+    profundidad: Mapped[float] = mapped_column(Float)
+
+    categoria: Mapped["Categoria"] = relationship(back_populates="muebles")
