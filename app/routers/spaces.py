@@ -53,4 +53,10 @@ async def analyze_space(
     residual = residual[np.all((residual >= 0) & (residual <= dims), axis=1)]
     scan = OctreeNode.from_points(residual) if len(residual) else None
 
+    # 2. Ask OmniRoute for a design proposal.
+    try:
+        proposal = await suggester(tuple(dims.tolist()), body.estilo, body.instrucciones, ransac["planos"])
+    except OmniRouteError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"OmniRoute: {exc}") from exc
+
     raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, "Análisis en construcción")
