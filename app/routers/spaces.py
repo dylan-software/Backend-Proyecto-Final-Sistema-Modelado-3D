@@ -246,14 +246,19 @@ async def add_catalog_furniture(
         201 with the stored item, its category and whether that category was just created.
 
     Raises:
-        HTTPException: 422 "Others" without custom_category, 502 OmniRoute failure,
+        HTTPException: 422 "Others" without custom_category or incoherent name, 502 OmniRoute failure,
             503 database failure.
     """
     category_name = _category_name(body)
     try:
-        await validator(body.nombre)
+        coherent = await validator(body.nombre)
     except OmniRouteError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"OmniRoute: {exc}") from exc
+    if not coherent:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"'{body.nombre.strip()}' no es un mueble ni un accesorio válido para una habitación.",
+        )
     try:
         categoria, created = await _get_or_create_category(session, category_name)
         item = MuebleCatalogo(
