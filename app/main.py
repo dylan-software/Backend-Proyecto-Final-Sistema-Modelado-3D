@@ -8,6 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.database.connection import engine
 from app.geometry.router import router as geometry_router
 from app.models.space import Base
+from app.routers.auth import router as auth_router
 from app.routers.spaces import router as spaces_router
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router)
 app.include_router(geometry_router)
 app.include_router(spaces_router)
 
