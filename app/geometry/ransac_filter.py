@@ -81,4 +81,9 @@ def _fit_planes(cloud, residual_threshold, max_planes, min_inliers):
         remaining = remaining[~mask]
 
     clean = np.vstack(kept) if kept else np.empty((0, 3))
-    return {"planos": planes, "puntos_limpios": clean.tolist(), "ruido": int(len(remaining))}
+    return {
+        "planos": planes,
+        "puntos_limpios": clean.tolist(),
+        "puntos_residuales": remaining.tolist(),
+        "ruido": int(len(remaining)),
+    }
