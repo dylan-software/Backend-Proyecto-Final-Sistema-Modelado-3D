@@ -51,3 +51,28 @@ class OctreeNode:
         if point[2] >= self.center[2]:
             index += 1
         return self.children[index]
+
+    def insert(self, point):
+        """Insert a point, subdividing full leaves. Returns False if it lies outside the cell."""
+        point = np.asarray(point, dtype=float)
+        if not self.contains(point):
+            return False
+        if self.is_leaf():
+            if len(self.points) < self.capacity or self.depth >= self.max_depth:
+                self.points.append(point)
+                return True
+            self.subdivide()
+        return self._child_for(point).insert(point)
+
+    @classmethod
+    def from_points(cls, points, capacity=8, max_depth=8):
+        """Build a tree whose root cube encloses every point."""
+        points = np.asarray(points, dtype=float).reshape(-1, 3)
+        if len(points) == 0:
+            return cls(np.zeros(3), 1.0, capacity=capacity, max_depth=max_depth)
+        lo, hi = points.min(axis=0), points.max(axis=0)
+        half_size = max(float((hi - lo).max()) / 2, 1e-6) * 1.001
+        root = cls((lo + hi) / 2, half_size, capacity=capacity, max_depth=max_depth)
+        for point in points:
+            root.insert(point)
+        return root
