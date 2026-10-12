@@ -90,4 +90,19 @@ async def analyze_space(
         placed.append((box_min, box_max))
         accepted.append(item)
 
+    # 4. Store the room together with its validated layout.
+    room = Habitacion(
+        nombre=body.nombre,
+        ancho=float(dims[0]),
+        alto=float(dims[1]),
+        profundidad=float(dims[2]),
+    )
+    room.muebles = [MuebleSugerido(**item.model_dump()) for item in accepted]
+    try:
+        session.add(room)
+        await session.commit()
+    except (SQLAlchemyError, OSError) as exc:
+        await session.rollback()
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "No se pudo guardar en la base de datos.") from exc
+
     raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, "Análisis en construcción")
