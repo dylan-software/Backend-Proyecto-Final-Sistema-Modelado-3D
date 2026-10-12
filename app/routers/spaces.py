@@ -28,6 +28,9 @@ router = APIRouter(prefix="/api/v1/spaces", tags=["spaces"])
 # fewer are treated as sensor noise.
 MIN_OBSTACLE_POINTS = 5
 
+# Category the web interface sends when the user types a category of their own.
+OTHERS_CATEGORY = "others"
+
 
 def get_layout_suggester():
     """FastAPI dependency returning the layout generator; tests override it with a fake."""
@@ -46,6 +49,27 @@ def _furniture_box(item):
     box_min = np.array([item.posicion_x - half_w, item.posicion_y, item.posicion_z - half_d])
     box_max = np.array([item.posicion_x + half_w, item.posicion_y + item.alto, item.posicion_z + half_d])
     return box_min, box_max
+
+
+def _category_name(body):
+    """Name of the category a catalog item belongs to.
+
+    "Others" means the user typed a new category in custom_category; any other value is used as is.
+    Extra whitespace is collapsed so "  Mesas   auxiliares " and "Mesas auxiliares" are the same.
+
+    Raises:
+        HTTPException: 422 "Others" was selected without a custom_category.
+    """
+    selected = " ".join(body.categoria.split())
+    if selected.casefold() != OTHERS_CATEGORY:
+        return selected
+    custom = " ".join((body.custom_category or "").split())
+    if not custom:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "Con la categoría 'Others' debes indicar el nombre en custom_category.",
+        )
+    return custom
 
 
 async def _visual_context(encoded):
