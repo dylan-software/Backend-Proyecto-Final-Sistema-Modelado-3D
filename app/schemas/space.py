@@ -69,3 +69,25 @@ class AnalyzeResponse(BaseModel):
     origen: Point
     ruido: int
     contexto_visual: VisualContext | None = None
+
+
+class CatalogFurnitureIn(BaseModel):
+    nombre: str = Field(min_length=1, max_length=120)
+    # One of the fixed categories of the web interface, or "Others" to create a new one.
+    categoria: str = Field(min_length=1, max_length=60)
+    # Name of the new category; only used when categoria is "Others".
+    custom_category: str | None = Field(None, max_length=60)
+    ancho: float = Field(gt=0)
+    alto: float = Field(gt=0)
+    profundidad: float = Field(gt=0)
+
+
+class CatalogFurnitureOut(BaseModel):
+    id: int
+    nombre: str
+    categoria_id: int
+    categoria: str
+    categoria_nueva: bool
+    ancho: float
+    alto: float
+    profundidad: float
