@@ -1,8 +1,19 @@
+import json
 import os
 
 import httpx
 
 DEFAULT_BASE_URL = "http://localhost:20128/v1"
+
+SYSTEM_PROMPT = (
+    "Eres un diseñador de interiores. Propón mobiliario para una habitación rectangular. "
+    "Coordenadas en metros: x en [0, ancho], y hacia arriba en [0, alto], z en [0, profundidad]. "
+    "posicion_x y posicion_z son el centro del mueble en planta; posicion_y es la altura de su base "
+    "(0 = suelo). Ningún mueble puede salirse de la habitación ni solaparse con otro. "
+    'Responde solo con JSON: {"descripcion": str, "muebles": [{"nombre": str, "ancho": float, '
+    '"alto": float, "profundidad": float, "posicion_x": float, "posicion_y": float, "posicion_z": float}]}'
+)
+
 
 class OmniRouteError(Exception):
     """Raised when OmniRoute is not configured or returns an unusable answer."""
@@ -34,3 +45,38 @@ async def chat_completion(messages, temperature=0.4, timeout=60.0):
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise OmniRouteError("unexpected response shape") from exc
 
+
+async def suggest_layout(dims, estilo, instrucciones=None, superficies=()):
+    """Ask the model for a furniture layout. Returns {"descripcion": str, "muebles": [dict, ...]}."""
+    ancho, alto, profundidad = dims
+    request = {
+        "habitacion": {"ancho": ancho, "alto": alto, "profundidad": profundidad},
+        "estilo": estilo,
+        "instrucciones": instrucciones,
+        "superficies_detectadas": [s["tipo"] for s in superficies],
+    }
+    content = await chat_completion(
+        [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(request, ensure_ascii=False)},
+        ]
+    )
+    data = _extract_json(content)
+    muebles = data.get("muebles")
+    if not isinstance(muebles, list):
+        raise OmniRouteError("the reply has no 'muebles' list")
+    return {"descripcion": str(data.get("descripcion", "")), "muebles": muebles}
+
+
+def _extract_json(text):
+    # Models often wrap JSON in prose or ``` fences; keep only the outermost object.
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        raise OmniRouteError("the reply does not contain JSON")
+    try:
+        data = json.loads(text[start : end + 1])
+    except json.JSONDecodeError as exc:
+        raise OmniRouteError("the reply contains malformed JSON") from exc
+    if not isinstance(data, dict):
+        raise OmniRouteError("the reply JSON is not an object")
+    return data
