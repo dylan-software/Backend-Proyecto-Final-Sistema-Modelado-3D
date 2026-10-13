@@ -132,3 +132,41 @@ consultas.
 Para los muebles ya colocados se usa además un `cKDTree` de SciPy sobre sus centros
 (construcción O(m log m)): solo los muebles cuya esfera envolvente alcanza la del nuevo se comparan
 con la prueba exacta de cajas.
+
+## Algoritmo: RANSAC para detectar planos
+
+Una nube de puntos de cámara web trae ruido: puntos sueltos, reflejos y objetos. Un ajuste por
+mínimos cuadrados normal se deja arrastrar por esos valores atípicos. **RANSAC** (*RANdom SAmple
+Consensus*) es robusto frente a ellos. Implementación: `app/geometry/ransac_filter.py`.
+
+**Idea.** Repetir `T` veces:
+
+1. Elegir al azar el mínimo de puntos que define un plano (3).
+2. Ajustar el plano a esos 3 puntos.
+3. Contar los *inliers*: puntos a menos de `residual_threshold` (2 cm) del plano.
+
+Se queda el plano con más inliers y se reajusta con todos ellos.
+
+**Detección de varias superficies.** Se aplica RANSAC, se guardan los inliers del mejor plano como
+una superficie, se quitan de la nube y se repite con lo que queda, hasta 6 superficies (suelo,
+techo y 4 paredes) o hasta que el mejor plano tenga menos de 50 puntos. Lo que sobra al final son
+objetos y ruido (`puntos_residuales`), que alimentan el octree de colisiones.
+
+**Paredes verticales.** `RANSACRegressor` de scikit-learn ajusta una función `y = a·x + b·z + c`,
+que no puede representar un plano vertical. Por eso cada ronda prueba los tres ejes como variable
+dependiente (`x = f(y, z)`, `y = f(x, z)`, `z = f(x, y)`) y se queda con el que explica más puntos.
+La normal del plano sale de los coeficientes: para `y = a·x + b·z + c` es `(−a, 1, −b)` normalizada.
+Según su componente vertical se clasifica como `horizontal` (suelo o techo, |n_y| > 0.9),
+`pared` (|n_y| < 0.1) o `inclinada`.
+
+**Número de intentos.** Si una fracción `w` de los puntos pertenece al plano buscado, la
+probabilidad de que un intento elija 3 inliers es `w³`, y la de acertar al menos una vez en `T`
+intentos es `1 − (1 − w³)^T`. Con 6 superficies parecidas, cada eje tiene 2 planos candidatos, así
+que por intento la probabilidad es ≈ 2·(1/6)³ ≈ 0.9 %. Con las 100 iteraciones por defecto solo se
+acierta el ~61 % de las veces; con `T = 300` (`RANSAC_TRIALS`) sube al ~94 % por eje y a más del
+99.9 % combinando los tres ejes.
+
+**Coste.** Por superficie: 3 ejes × `T` intentos × evaluar `s` puntos, con `s = min(n, 5000)`
+(`MAX_FIT_POINTS`: el ajuste usa una muestra acotada, pero todos los puntos se puntúan contra el
+plano final). En total O(P · 3 · T · s + P · n) para `P` superficies, lineal en `n` para nubes
+grandes. Unos 2–3 s para una habitación de ~2 000 puntos, ejecutados en un hilo aparte.
