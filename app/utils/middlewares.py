@@ -46,3 +46,27 @@ class AuditLoggingMiddleware(BaseHTTPMiddleware):
             status_code,
             request.state.duration_ms,
         )
+
+
+class TrailingSlashMiddleware:
+    """Serves "/api/v1/spaces/" exactly like "/api/v1/spaces" by dropping the trailing slash.
+
+    FastAPI would answer the slash variant with a 307 redirect instead. Behind the Render proxy that
+    redirect can point to http:// and browsers do not follow redirects on CORS preflights, so the
+    frontend ends up with a 404 or a CORS error. Rewriting the path before routing avoids the redirect.
+    The root path "/" is left untouched.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            path = scope["path"]
+            if len(path) > 1 and path.endswith("/"):
+                scope = dict(scope)
+                scope["path"] = path.rstrip("/") or "/"
+                raw_path = scope.get("raw_path")
+                if raw_path:
+                    scope["raw_path"] = raw_path.rstrip(b"/") or b"/"
+        await self.app(scope, receive, send)
