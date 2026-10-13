@@ -1,3 +1,5 @@
+import asyncio
+
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
@@ -18,6 +20,7 @@ from app.schemas.space import (
     RoomOut,
 )
 from app.services.omniroute import OmniRouteError, suggest_layout
+from app.utils.helpers import ImageDecodeError, load_image_matrix, summarize_image
 
 router = APIRouter(prefix="/api/v1/spaces", tags=["spaces"])
 
@@ -38,6 +41,14 @@ def _furniture_box(item):
     return box_min, box_max
 
 
+async def _visual_context(encoded):
+    """Brightness and palette of the optional room photo, or None when no photo was sent."""
+    if not encoded:
+        return None
+    matrix = await load_image_matrix(encoded)
+    return await asyncio.to_thread(summarize_image, matrix)
+
+
 @router.post("/analyze", response_model=AnalyzeResponse, status_code=status.HTTP_201_CREATED)
 async def analyze_space(
     body: AnalyzeRequest,
@@ -45,7 +56,11 @@ async def analyze_space(
     suggester=Depends(get_layout_suggester),
 ):
     # 1. Isolate floor, walls and ceiling from the scan; whatever is left are objects or noise.
-    ransac = await clean_point_cloud(body.puntos)
+    # The photo is decoded while RANSAC runs; both are CPU-bound and run in worker threads.
+    try:
+        ransac, visual = await asyncio.gather(clean_point_cloud(body.puntos), _visual_context(body.imagen))
+    except ImageDecodeError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Imagen inválida: {exc}") from exc
     surfaces = np.asarray(ransac["puntos_limpios"], dtype=float).reshape(-1, 3)
     if len(surfaces) == 0:
         surfaces = np.asarray(body.puntos, dtype=float)
@@ -68,7 +83,13 @@ async def analyze_space(
 
     # 2. Ask OmniRoute for a design proposal.
     try:
-        proposal = await suggester(tuple(dims.tolist()), body.estilo, body.instrucciones, ransac["planos"])
+        proposal = await suggester(
+            tuple(dims.tolist()),
+            body.estilo,
+            body.instrucciones,
+            ransac["planos"],
+            contexto_visual=visual,
+        )
     except OmniRouteError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"OmniRoute: {exc}") from exc
 
@@ -119,4 +140,5 @@ async def analyze_space(
         superficies=ransac["planos"],
         origen=tuple(origin.tolist()),
         ruido=ransac["ruido"],
+        contexto_visual=visual,
     )

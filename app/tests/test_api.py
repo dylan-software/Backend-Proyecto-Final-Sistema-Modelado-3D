@@ -74,7 +74,7 @@ def room_scan():
     return np.vstack(surfaces + [existing_object, noise]) + [10.0, 0.0, -2.0]
 
 
-async def fake_suggester(dims, estilo, instrucciones, superficies):
+async def fake_suggester(dims, estilo, instrucciones, superficies, contexto_visual=None):
     return {
         "descripcion": f"Propuesta {estilo}",
         "muebles": [
@@ -130,7 +130,7 @@ async def test_analyze_full_flow(client, db_sessions):
 async def test_analyze_reports_omniroute_failure(client, db_sessions):
     from app.services.omniroute import OmniRouteError
 
-    async def failing_suggester(*args):
+    async def failing_suggester(*args, **kwargs):
         raise OmniRouteError("OMNIROUTE_API_KEY is not set")
 
     app.dependency_overrides[get_layout_suggester] = lambda: failing_suggester
