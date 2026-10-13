@@ -10,8 +10,10 @@ from sqlalchemy.pool import StaticPool
 
 from app.database.connection import get_session
 from app.main import app
-from app.models.space import Base, Habitacion, MuebleSugerido
-from app.routers.spaces import get_layout_suggester
+from app.models.space import Base, Categoria, Habitacion, MuebleCatalogo, MuebleSugerido
+from app.routers.spaces import get_coherence_validator, get_layout_suggester
+from app.services import semantic_filter
+from app.services.omniroute import OmniRouteError
 
 pytestmark = pytest.mark.anyio
 
@@ -194,3 +196,131 @@ async def test_analyze_rejects_invalid_photo(client, db_sessions):
 
     assert response.status_code == 422
     assert "Imagen inválida" in response.json()["detail"]
+
+
+COHERENT_NAMES = {"silla", "puff"}
+
+
+@pytest.fixture
+def fake_validator():
+    """Stand-in for OmniRoute: only the names in COHERENT_NAMES are furniture. Records every call."""
+    calls = []
+
+    async def validator(nombre):
+        calls.append(nombre)
+        return nombre.strip().lower() in COHERENT_NAMES
+
+    app.dependency_overrides[get_coherence_validator] = lambda: validator
+    yield calls
+    app.dependency_overrides.pop(get_coherence_validator, None)
+
+
+def catalog_item(nombre, categoria="Sillas", custom_category=None):
+    return {
+        "nombre": nombre,
+        "categoria": categoria,
+        "custom_category": custom_category,
+        "ancho": 0.5,
+        "alto": 0.9,
+        "profundidad": 0.5,
+    }
+
+
+async def test_catalog_accepts_coherent_furniture(client, db_sessions, fake_validator):
+    response = await client.post("/api/v1/spaces/catalog", json=catalog_item("Silla"))
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert (body["nombre"], body["categoria"], body["categoria_nueva"]) == ("Silla", "Sillas", True)
+    assert fake_validator == ["Silla"]
+    async with db_sessions() as session:
+        saved = (await session.scalars(select(MuebleCatalogo))).all()
+    assert [(m.nombre, m.categoria_id) for m in saved] == [("Silla", body["categoria_id"])]
+
+
+async def test_catalog_rejects_incoherent_furniture(client, db_sessions, fake_validator):
+    response = await client.post(
+        "/api/v1/spaces/catalog", json=catalog_item("Algoritmo", "Others", custom_category="Ideas")
+    )
+
+    assert response.status_code == 422
+    assert "Algoritmo" in response.json()["detail"]
+    # Nothing is stored, not even the new category.
+    async with db_sessions() as session:
+        assert (await session.scalars(select(MuebleCatalogo))).all() == []
+        assert (await session.scalars(select(Categoria))).all() == []
+
+
+async def test_catalog_creates_custom_category_once(client, db_sessions, fake_validator):
+    first = await client.post(
+        "/api/v1/spaces/catalog", json=catalog_item("Puff", "Others", custom_category="Asientos bajos")
+    )
+    second = await client.post(
+        "/api/v1/spaces/catalog", json=catalog_item("Silla", "others", custom_category="  asientos   BAJOS ")
+    )
+
+    assert first.status_code == second.status_code == 201, (first.text, second.text)
+    assert first.json()["categoria_nueva"] is True
+    assert second.json()["categoria_nueva"] is False
+    assert second.json()["categoria_id"] == first.json()["categoria_id"]
+    async with db_sessions() as session:
+        assert [c.nombre for c in (await session.scalars(select(Categoria))).all()] == ["Asientos bajos"]
+
+
+async def test_catalog_requires_custom_category_for_others(client, db_sessions, fake_validator):
+    response = await client.post("/api/v1/spaces/catalog", json=catalog_item("Puff", "Others"))
+
+    assert response.status_code == 422
+    assert "custom_category" in response.json()["detail"]
+
+
+async def test_catalog_reports_filter_failure(client, db_sessions):
+    async def failing_validator(nombre):
+        raise OmniRouteError("request failed: timeout")
+
+    app.dependency_overrides[get_coherence_validator] = lambda: failing_validator
+    try:
+        response = await client.post("/api/v1/spaces/catalog", json=catalog_item("Silla"))
+    finally:
+        app.dependency_overrides.pop(get_coherence_validator, None)
+
+    assert response.status_code == 502
+    async with db_sessions() as session:
+        assert (await session.scalars(select(MuebleCatalogo))).all() == []
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        ("TRUE", True),
+        (" false\n", False),
+        ("```TRUE```", True),
+        ('"True."', True),
+        ("<think>?</think>FALSE", False),
+    ],
+)
+async def test_parse_coherence_reply(reply, expected):
+    assert semantic_filter.parse_coherence_reply(reply) is expected
+
+
+@pytest.mark.parametrize("reply", ["", "TRUE porque es un mueble", "Sí", None])
+async def test_parse_coherence_reply_rejects_other_answers(reply):
+    with pytest.raises(OmniRouteError):
+        semantic_filter.parse_coherence_reply(reply)
+
+
+async def test_validate_furniture_coherence_sends_strict_prompt(monkeypatch):
+    sent = {}
+
+    async def fake_chat_completion(messages, temperature):
+        sent["messages"], sent["temperature"] = messages, temperature
+        return "TRUE" if "Silla" in messages[1]["content"] else "FALSE"
+
+    monkeypatch.setattr(semantic_filter, "chat_completion", fake_chat_completion)
+
+    assert await semantic_filter.validate_furniture_coherence(" Silla ") is True
+    system, user = sent["messages"]
+    assert "TRUE o FALSE" in system["content"]
+    assert user == {"role": "user", "content": '"Silla"'}
+    assert sent["temperature"] == 0
+    assert await semantic_filter.validate_furniture_coherence("Algoritmo") is False
