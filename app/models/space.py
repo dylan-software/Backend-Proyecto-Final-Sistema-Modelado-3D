@@ -10,6 +10,8 @@ class Habitacion(Base):
     __tablename__ = "habitaciones"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Account that owns the room, as sent by the frontend; rooms are only listed to that account.
+    user_id: Mapped[str | None] = mapped_column(String(64), index=True)
     nombre: Mapped[str] = mapped_column(String(120))
     ancho: Mapped[float] = mapped_column(Float)
     alto: Mapped[float] = mapped_column(Float)
