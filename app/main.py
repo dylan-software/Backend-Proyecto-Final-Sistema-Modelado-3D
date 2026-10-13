@@ -1,8 +1,9 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.database.connection import engine
@@ -41,6 +42,14 @@ app.add_middleware(
 )
 # Added last, so it is the outermost middleware and its timing covers CORS and the endpoint itself.
 app.add_middleware(AuditLoggingMiddleware)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Last-resort handler for errors no endpoint caught: logs the traceback and answers 500."""
+    logger.exception("Unhandled error in %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "Error interno del servidor."})
+
 
 app.include_router(auth_router)
 app.include_router(geometry_router)
