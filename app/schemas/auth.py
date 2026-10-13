@@ -23,3 +23,9 @@ class UserRegister(UserLogin):
     @classmethod
     def strip_nombre(cls, value):
         return value.strip() if isinstance(value, str) else value
+
+
+class UserOut(BaseModel):
+    id: int
+    nombre: str
+    email: str
