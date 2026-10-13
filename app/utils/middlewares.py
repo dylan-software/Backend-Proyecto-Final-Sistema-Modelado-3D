@@ -12,4 +12,6 @@ class AuditLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         # perf_counter is monotonic: unlike time.time() it never jumps when the system clock is adjusted.
         request.state.start_time = time.perf_counter()
-        return await call_next(request)
+        response = await call_next(request)
+        request.state.duration_ms = (time.perf_counter() - request.state.start_time) * 1000
+        return response
