@@ -1,0 +1,11 @@
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# FastAPI declares dependencies as Depends(...) parameter defaults by design.
+ignore = ["B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["app/tests"]

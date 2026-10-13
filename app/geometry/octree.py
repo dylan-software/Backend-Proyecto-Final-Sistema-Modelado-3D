@@ -24,7 +24,7 @@ class OctreeNode(Generic[T]):
         self.capacity = capacity
         self.max_depth = max_depth
         self.entries: list[SpatialEntry[T]] = []
-        self.children: list["OctreeNode[T]"] | None = None
+        self.children: list[OctreeNode[T]] | None = None
 
     def is_leaf(self) -> bool:
         return self.children is None
