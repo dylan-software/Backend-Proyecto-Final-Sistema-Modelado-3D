@@ -20,3 +20,5 @@ def configure_logging(level=logging.INFO):
     formatter.converter = time.gmtime
     handler.setFormatter(formatter)
     logging.basicConfig(level=level, handlers=[handler])
+    # httpx logs every outgoing request at INFO; the audit middleware already covers the traffic.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
