@@ -8,13 +8,16 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger("app.audit")
 
+# Response header with the server-side processing time in milliseconds, e.g. "X-Process-Time: 12.34".
+PROCESS_TIME_HEADER = "X-Process-Time"
+
 
 class AuditLoggingMiddleware(BaseHTTPMiddleware):
     """Audits every HTTP request that reaches the server.
 
     Logs one line per request: method, path (without the query string, which may carry user data),
     status code and total processing time. 5xx answers, such as a 502 from OmniRoute, are logged as
-    warnings so they stand out.
+    warnings so they stand out. The same time is returned to the client in the X-Process-Time header.
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
@@ -29,6 +32,7 @@ class AuditLoggingMiddleware(BaseHTTPMiddleware):
         self._log(
             request, response.status_code, logging.WARNING if response.status_code >= 500 else logging.INFO
         )
+        response.headers[PROCESS_TIME_HEADER] = f"{request.state.duration_ms:.2f}"
         return response
 
     @staticmethod
