@@ -267,6 +267,7 @@ async def add_catalog_furniture(
     try:
         categoria, created = await _get_or_create_category(session, category_name)
         item = MuebleCatalogo(
+            user_id=body.user_id,
             categoria_id=categoria.id,
             nombre=body.nombre,
             ancho=body.ancho,
