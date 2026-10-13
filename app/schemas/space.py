@@ -8,6 +8,8 @@ class AnalyzeRequest(BaseModel):
     estilo: str = Field("moderno", min_length=1, max_length=60)
     instrucciones: str | None = Field(None, max_length=1000)
     puntos: list[Point] = Field(min_length=3)
+    # Optional room photo, base64 or data URL; only its colors are used.
+    imagen: str | None = Field(None, max_length=15_000_000)
     # Optional measured dimensions; any that are missing are taken from the scan.
     ancho: float | None = Field(None, gt=0)
     alto: float | None = Field(None, gt=0)
@@ -48,6 +50,16 @@ class RoomOut(BaseModel):
     profundidad: float
 
 
+class ColorShare(BaseModel):
+    hex: str
+    proporcion: float
+
+
+class VisualContext(BaseModel):
+    brillo: float
+    colores: list[ColorShare]
+
+
 class AnalyzeResponse(BaseModel):
     habitacion: RoomOut
     descripcion: str
@@ -56,3 +68,4 @@ class AnalyzeResponse(BaseModel):
     superficies: list[Surface]
     origen: Point
     ruido: int
+    contexto_visual: VisualContext | None = None
