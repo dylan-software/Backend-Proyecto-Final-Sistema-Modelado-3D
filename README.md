@@ -170,3 +170,30 @@ acierta el ~61 % de las veces; con `T = 300` (`RANSAC_TRIALS`) sube al ~94 % por
 (`MAX_FIT_POINTS`: el ajuste usa una muestra acotada, pero todos los puntos se puntúan contra el
 plano final). En total O(P · 3 · T · s + P · n) para `P` superficies, lineal en `n` para nubes
 grandes. Unos 2–3 s para una habitación de ~2 000 puntos, ejecutados en un hilo aparte.
+
+## Arquitectura del flujo con OmniRoute
+
+```
+ Navegador (frontend)               Backend FastAPI                              Servicios externos
+ ────────────────────               ───────────────                              ──────────────────
+ POST /api/v1/spaces/analyze ──▶ routers/spaces.analyze_space
+ { nombre, estilo, puntos }            │
+                                       ├─▶ geometry/ransac_filter ── planos + puntos residuales
+                                       │       (hilo de trabajo)
+                                       │
+                                       ├─▶ services/omniroute ── POST /v1/chat/completions ──▶ OmniRoute :20128
+                                       │       ◀──────── JSON { descripcion, muebles[] } ─────────  │
+                                       │                                                        proveedor LLM
+                                       │
+                                       ├─▶ geometry/collision + Octree ── muebles válidos / descartados
+                                       │
+                                       ├─▶ SQLAlchemy + asyncpg ─────────────────────────────▶ PostgreSQL
+                                       │       habitaciones 1 ── N muebles_sugeridos
+                                       ▼
+ 201 { habitacion, muebles,  ◀── AnalyzeResponse
+       descartados, superficies }
+```
+
+Errores: `502` si OmniRoute falla o responde algo que no es JSON válido, `503` si no se puede
+guardar en la base de datos y `422` si la petición es inválida o no se pueden deducir las
+dimensiones de la habitación.
