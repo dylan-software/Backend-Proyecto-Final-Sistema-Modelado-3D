@@ -3,6 +3,7 @@ import asyncio
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,10 +11,12 @@ from app.database.connection import get_session
 from app.geometry.collision import check_bounding_box_collision
 from app.geometry.octree import OctreeNode
 from app.geometry.ransac_filter import clean_point_cloud
-from app.models.space import Habitacion, MuebleSugerido
+from app.models.space import Categoria, Habitacion, MuebleCatalogo, MuebleSugerido
 from app.schemas.space import (
     AnalyzeRequest,
     AnalyzeResponse,
+    CatalogFurnitureIn,
+    CatalogFurnitureOut,
     DiscardedFurniture,
     FurnitureOut,
     FurnitureProposal,
@@ -203,4 +206,62 @@ async def analyze_space(
         origen=tuple(origin.tolist()),
         ruido=ransac["ruido"],
         contexto_visual=visual,
+    )
+
+
+async def _get_or_create_category(session, name):
+    """Find a category by name (case-insensitive) or add a new one to the session.
+
+    Returns:
+        (categoria, created): the row and whether it was created now.
+    """
+    categoria = await session.scalar(select(Categoria).where(func.lower(Categoria.nombre) == name.lower()))
+    if categoria is not None:
+        return categoria, False
+    categoria = Categoria(nombre=name)
+    session.add(categoria)
+    await session.flush()
+    return categoria, True
+
+
+@router.post("/catalog", response_model=CatalogFurnitureOut, status_code=status.HTTP_201_CREATED)
+async def add_catalog_furniture(body: CatalogFurnitureIn, session: AsyncSession = Depends(get_session)):
+    """Add a piece of furniture to the catalog, creating its category when it is new.
+
+    With categoria "Others" the category is the one typed in custom_category; it is created the first
+    time and reused afterwards.
+
+    Returns:
+        201 with the stored item, its category and whether that category was just created.
+
+    Raises:
+        HTTPException: 422 "Others" without custom_category, 503 database failure.
+    """
+    category_name = _category_name(body)
+    try:
+        categoria, created = await _get_or_create_category(session, category_name)
+        item = MuebleCatalogo(
+            categoria_id=categoria.id,
+            nombre=body.nombre.strip(),
+            ancho=body.ancho,
+            alto=body.alto,
+            profundidad=body.profundidad,
+        )
+        session.add(item)
+        await session.commit()
+    except (SQLAlchemyError, OSError) as exc:
+        await session.rollback()
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "No se pudo guardar en la base de datos."
+        ) from exc
+
+    return CatalogFurnitureOut(
+        id=item.id,
+        nombre=item.nombre,
+        categoria_id=categoria.id,
+        categoria=categoria.nombre,
+        categoria_nueva=created,
+        ancho=item.ancho,
+        alto=item.alto,
+        profundidad=item.profundidad,
     )
