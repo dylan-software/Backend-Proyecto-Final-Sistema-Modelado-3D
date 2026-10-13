@@ -1,4 +1,4 @@
-from sqlalchemy import Float, ForeignKey, Integer, String
+from sqlalchemy import Float, ForeignKey, Index, Integer, String, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -42,9 +42,12 @@ class Categoria(Base):
     __tablename__ = "categorias"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    nombre: Mapped[str] = mapped_column(String(60), unique=True)
+    nombre: Mapped[str] = mapped_column(String(60))
 
     muebles: Mapped[list["MuebleCatalogo"]] = relationship(back_populates="categoria")
+
+    # "Asientos" and "asientos" are the same category.
+    __table_args__ = (Index("uq_categorias_nombre_lower", func.lower(nombre), unique=True),)
 
 
 class MuebleCatalogo(Base):

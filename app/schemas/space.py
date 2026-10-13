@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 Point = tuple[float, float, float]
 
@@ -80,6 +80,12 @@ class CatalogFurnitureIn(BaseModel):
     ancho: float = Field(gt=0)
     alto: float = Field(gt=0)
     profundidad: float = Field(gt=0)
+
+    @field_validator("nombre", mode="before")
+    @classmethod
+    def strip_nombre(cls, value):
+        # Runs before min_length, so a name made only of spaces is rejected instead of stored empty.
+        return value.strip() if isinstance(value, str) else value
 
 
 class CatalogFurnitureOut(BaseModel):
