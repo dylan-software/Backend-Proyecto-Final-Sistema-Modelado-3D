@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database.connection import get_session
 from app.geometry.collision import check_bounding_box_collision
@@ -338,9 +339,41 @@ async def list_user_spaces(
     Raises:
         HTTPException: 422 missing user_id, 503 database failure.
     """
-    rooms, catalog = [], []
+    rooms_query = (
+        select(Habitacion)
+        .where(Habitacion.user_id == user_id)
+        .options(selectinload(Habitacion.muebles))
+        .order_by(Habitacion.id)
+    )
+    catalog = []
+    try:
+        rooms = (await session.scalars(rooms_query)).all()
+    except DATABASE_ERRORS as exc:
+        raise database_unavailable() from exc
     return UserSpacesOut(
         user_id=user_id,
-        habitaciones=rooms,
+        habitaciones=[
+            SpaceOut(
+                id=room.id,
+                nombre=room.nombre,
+                ancho=room.ancho,
+                alto=room.alto,
+                profundidad=room.profundidad,
+                muebles=[
+                    FurnitureOut(
+                        id=m.id,
+                        nombre=m.nombre,
+                        ancho=m.ancho,
+                        alto=m.alto,
+                        profundidad=m.profundidad,
+                        posicion_x=m.posicion_x,
+                        posicion_y=m.posicion_y,
+                        posicion_z=m.posicion_z,
+                    )
+                    for m in room.muebles
+                ],
+            )
+            for room in rooms
+        ],
         catalogo=catalog,
     )
