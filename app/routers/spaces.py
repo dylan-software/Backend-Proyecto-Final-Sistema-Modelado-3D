@@ -30,11 +30,18 @@ MIN_OBSTACLE_POINTS = 5
 
 
 def get_layout_suggester():
+    """FastAPI dependency returning the layout generator; tests override it with a fake."""
     return suggest_layout
 
 
 def _furniture_box(item):
-    """posicion_x/z is the center of the footprint and posicion_y the height of the base."""
+    """Axis-aligned bounding box of a proposed piece of furniture.
+
+    posicion_x/z is the center of the footprint and posicion_y the height of its base.
+
+    Returns:
+        (box_min, box_max): opposite corners in room coordinates, as NumPy arrays.
+    """
     half_w, half_d = item.ancho / 2, item.profundidad / 2
     box_min = np.array([item.posicion_x - half_w, item.posicion_y, item.posicion_z - half_d])
     box_max = np.array([item.posicion_x + half_w, item.posicion_y + item.alto, item.posicion_z + half_d])
@@ -42,7 +49,17 @@ def _furniture_box(item):
 
 
 async def _visual_context(encoded):
-    """Brightness and palette of the optional room photo, or None when no photo was sent."""
+    """Brightness and palette of the optional room photo.
+
+    Args:
+        encoded: base64 image or data URL, or None.
+
+    Returns:
+        {"brillo": float, "colores": [...]}, or None when no photo was sent.
+
+    Raises:
+        ImageDecodeError: the data is not valid base64 or not a readable image.
+    """
     if not encoded:
         return None
     matrix = await load_image_matrix(encoded)
@@ -55,6 +72,20 @@ async def analyze_space(
     session: AsyncSession = Depends(get_session),
     suggester=Depends(get_layout_suggester),
 ):
+    """Analyze a scanned room and store a validated furniture layout.
+
+    Pipeline: RANSAC detects floor, walls and ceiling (and, in parallel, OpenCV reads the optional
+    photo); OmniRoute proposes furniture; each piece is checked against the room bounds, the
+    furniture already accepted and the leftover scan points in an octree; the room and the
+    accepted pieces are saved in one transaction.
+
+    Returns:
+        201 with the stored room, accepted and discarded furniture, surfaces and visual context.
+
+    Raises:
+        HTTPException: 422 invalid photo or undeducible dimensions, 502 OmniRoute failure,
+            503 database failure.
+    """
     # 1. Isolate floor, walls and ceiling from the scan; whatever is left are objects or noise.
     # The photo is decoded while RANSAC runs; both are CPU-bound and run in worker threads.
     try:

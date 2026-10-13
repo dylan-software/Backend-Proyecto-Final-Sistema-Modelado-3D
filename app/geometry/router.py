@@ -35,11 +35,13 @@ class CollisionRequest(BaseModel):
 
 @router.post("/point-cloud")
 async def process_point_cloud(body: PointCloudRequest):
+    """Run only the RANSAC filter: detected planes, clean surface points and noise count."""
     return await clean_point_cloud(body.points, residual_threshold=body.residual_threshold)
 
 
 @router.post("/collision")
 async def check_collision(body: CollisionRequest):
+    """Check one furniture box against the room bounds, other boxes and optional scan points."""
     room = body.habitacion
     scan = OctreeNode.from_points(body.puntos_escaneo) if body.puntos_escaneo else None
     collides = check_bounding_box_collision(
