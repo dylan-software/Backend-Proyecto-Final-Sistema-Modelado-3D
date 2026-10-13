@@ -315,3 +315,4 @@ async def delete_catalog_furniture(
     except DATABASE_ERRORS as exc:
         await session.rollback()
         raise database_unavailable() from exc
+    return {"success": True, "message": "Furniture item successfully removed"}
