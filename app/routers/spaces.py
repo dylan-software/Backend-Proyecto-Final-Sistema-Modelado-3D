@@ -23,6 +23,7 @@ from app.schemas.space import (
     RoomOut,
 )
 from app.services.omniroute import OmniRouteError, suggest_layout
+from app.services.semantic_filter import validate_furniture_coherence
 from app.utils.helpers import ImageDecodeError, load_image_matrix, summarize_image
 
 router = APIRouter(prefix="/api/v1/spaces", tags=["spaces"])
@@ -38,6 +39,11 @@ OTHERS_CATEGORY = "others"
 def get_layout_suggester():
     """FastAPI dependency returning the layout generator; tests override it with a fake."""
     return suggest_layout
+
+
+def get_coherence_validator():
+    """FastAPI dependency returning the furniture name validator; tests override it with a fake."""
+    return validate_furniture_coherence
 
 
 def _furniture_box(item):
@@ -225,19 +231,29 @@ async def _get_or_create_category(session, name):
 
 
 @router.post("/catalog", response_model=CatalogFurnitureOut, status_code=status.HTTP_201_CREATED)
-async def add_catalog_furniture(body: CatalogFurnitureIn, session: AsyncSession = Depends(get_session)):
+async def add_catalog_furniture(
+    body: CatalogFurnitureIn,
+    session: AsyncSession = Depends(get_session),
+    validator=Depends(get_coherence_validator),
+):
     """Add a piece of furniture to the catalog, creating its category when it is new.
 
     With categoria "Others" the category is the one typed in custom_category; it is created the first
-    time and reused afterwards.
+    time and reused afterwards. Before anything is stored, OmniRoute checks that the name is a
+    plausible piece of furniture or room accessory.
 
     Returns:
         201 with the stored item, its category and whether that category was just created.
 
     Raises:
-        HTTPException: 422 "Others" without custom_category, 503 database failure.
+        HTTPException: 422 "Others" without custom_category, 502 OmniRoute failure,
+            503 database failure.
     """
     category_name = _category_name(body)
+    try:
+        await validator(body.nombre)
+    except OmniRouteError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"OmniRoute: {exc}") from exc
     try:
         categoria, created = await _get_or_create_category(session, category_name)
         item = MuebleCatalogo(
