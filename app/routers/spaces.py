@@ -363,29 +363,7 @@ async def list_user_spaces(
         raise database_unavailable() from exc
     return UserSpacesOut(
         user_id=user_id,
-        habitaciones=[
-            SpaceOut(
-                id=room.id,
-                nombre=room.nombre,
-                ancho=room.ancho,
-                alto=room.alto,
-                profundidad=room.profundidad,
-                muebles=[
-                    FurnitureOut(
-                        id=m.id,
-                        nombre=m.nombre,
-                        ancho=m.ancho,
-                        alto=m.alto,
-                        profundidad=m.profundidad,
-                        posicion_x=m.posicion_x,
-                        posicion_y=m.posicion_y,
-                        posicion_z=m.posicion_z,
-                    )
-                    for m in room.muebles
-                ],
-            )
-            for room in rooms
-        ],
+        habitaciones=[SpaceOut.model_validate(room, from_attributes=True) for room in rooms],
         catalogo=[
             CatalogItemOut(
                 id=item.id,
