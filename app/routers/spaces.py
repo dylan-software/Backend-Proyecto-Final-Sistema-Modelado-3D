@@ -303,3 +303,7 @@ async def delete_catalog_furniture(
     Raises:
         HTTPException: 404 no catalog item has that id, 503 database failure.
     """
+    try:
+        furniture = await session.scalar(select(MuebleCatalogo).where(MuebleCatalogo.id == furniture_id))
+    except DATABASE_ERRORS as exc:
+        raise database_unavailable() from exc
