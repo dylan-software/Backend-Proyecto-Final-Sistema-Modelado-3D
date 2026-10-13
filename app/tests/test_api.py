@@ -373,3 +373,29 @@ async def test_delete_catalog_furniture_not_found(client, db_sessions):
 
     assert response.status_code == 404
     assert "999" in response.json()["detail"]
+
+
+async def test_spaces_are_isolated_per_account(client, db_sessions, fake_validator):
+    app.dependency_overrides[get_layout_suggester] = lambda: fake_suggester
+    try:
+        for user_id, nombre in (("user-a", "Sala A"), ("user-b", "Sala B")):
+            response = await client.post(
+                "/api/v1/spaces/analyze",
+                json={"nombre": nombre, "user_id": user_id, "puntos": room_scan().tolist()},
+            )
+            assert response.status_code == 201, response.text
+    finally:
+        app.dependency_overrides.pop(get_layout_suggester, None)
+    await client.post("/api/v1/spaces/catalog", json={**catalog_item("Silla"), "user_id": "user-a"})
+    await client.post("/api/v1/spaces/catalog", json={**catalog_item("Puff"), "user_id": "user-b"})
+
+    user_a = (await client.get("/api/v1/spaces", params={"user_id": "user-a"})).json()
+    user_b = (await client.get("/api/v1/spaces", params={"user_id": "user-b"})).json()
+    stranger = (await client.get("/api/v1/spaces", params={"user_id": "user-c"})).json()
+
+    assert [r["nombre"] for r in user_a["habitaciones"]] == ["Sala A"]
+    assert [m["nombre"] for m in user_a["habitaciones"][0]["muebles"]] == ["mesa"]
+    assert [m["nombre"] for m in user_a["catalogo"]] == ["Silla"]
+    assert [r["nombre"] for r in user_b["habitaciones"]] == ["Sala B"]
+    assert [m["nombre"] for m in user_b["catalogo"]] == ["Puff"]
+    assert stranger["habitaciones"] == stranger["catalogo"] == []
