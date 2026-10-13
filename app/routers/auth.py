@@ -8,12 +8,13 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database.connection import get_session
 from app.models.user import Usuario
+from app.routers.errors import DATABASE_ERRORS, database_unavailable
 from app.schemas.auth import TokenOut, UserLogin, UserOut, UserRegister
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -78,27 +79,24 @@ async def register(body: UserRegister, session: AsyncSession = Depends(get_sessi
     Raises:
         HTTPException: 409 email already registered, 503 database failure.
     """
-    existing = await session.scalar(select(Usuario.id).where(Usuario.email == body.email))
-    if existing is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "El email ya está registrado.")
-
-    user = Usuario(
-        nombre=body.nombre,
-        email=body.email,
-        password_hash=await asyncio.to_thread(hash_password, body.password),
-    )
+    email_taken = HTTPException(status.HTTP_409_CONFLICT, "El email ya está registrado.")
     try:
+        if await session.scalar(select(Usuario.id).where(Usuario.email == body.email)) is not None:
+            raise email_taken
+        user = Usuario(
+            nombre=body.nombre,
+            email=body.email,
+            password_hash=await asyncio.to_thread(hash_password, body.password),
+        )
         session.add(user)
         await session.commit()
     except IntegrityError as exc:
         # Another request registered the same email between the check and the insert.
         await session.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, "El email ya está registrado.") from exc
-    except (SQLAlchemyError, OSError) as exc:
+        raise email_taken from exc
+    except DATABASE_ERRORS as exc:
         await session.rollback()
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, "No se pudo guardar en la base de datos."
-        ) from exc
+        raise database_unavailable() from exc
 
     return UserOut(id=user.id, nombre=user.nombre, email=user.email)
 
@@ -111,9 +109,12 @@ async def login(body: UserLogin, session: AsyncSession = Depends(get_session)):
         200 with the bearer token, its lifetime in seconds and the user.
 
     Raises:
-        HTTPException: 401 wrong email or password (same message for both).
+        HTTPException: 401 wrong email or password (same message for both), 503 database failure.
     """
-    user = await session.scalar(select(Usuario).where(Usuario.email == body.email))
+    try:
+        user = await session.scalar(select(Usuario).where(Usuario.email == body.email))
+    except DATABASE_ERRORS as exc:
+        raise database_unavailable() from exc
     # scrypt is CPU-bound; run it in a worker thread so other requests keep being served.
     valid = await asyncio.to_thread(
         verify_password, body.password, user.password_hash if user else _DUMMY_HASH

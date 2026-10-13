@@ -4,7 +4,7 @@ import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
 from sqlalchemy import func, select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.connection import get_session
@@ -12,6 +12,7 @@ from app.geometry.collision import check_bounding_box_collision
 from app.geometry.octree import OctreeNode
 from app.geometry.ransac_filter import clean_point_cloud
 from app.models.space import Categoria, Habitacion, MuebleCatalogo, MuebleSugerido
+from app.routers.errors import DATABASE_ERRORS, database_unavailable
 from app.schemas.space import (
     AnalyzeRequest,
     AnalyzeResponse,
@@ -221,13 +222,18 @@ async def _get_or_create_category(session, name):
     Returns:
         (categoria, created): the row and whether it was created now.
     """
-    categoria = await session.scalar(select(Categoria).where(func.lower(Categoria.nombre) == name.lower()))
+    query = select(Categoria).where(func.lower(Categoria.nombre) == name.lower())
+    categoria = await session.scalar(query)
     if categoria is not None:
         return categoria, False
-    categoria = Categoria(nombre=name)
-    session.add(categoria)
-    await session.flush()
-    return categoria, True
+    try:
+        # Savepoint: if another request creates the same category first, only this insert is undone.
+        async with session.begin_nested():
+            categoria = Categoria(nombre=name)
+            session.add(categoria)
+        return categoria, True
+    except IntegrityError:
+        return await session.scalar(query), False
 
 
 @router.post("/catalog", response_model=CatalogFurnitureOut, status_code=status.HTTP_201_CREATED)
@@ -257,24 +263,22 @@ async def add_catalog_furniture(
     if not coherent:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
-            f"'{body.nombre.strip()}' no es un mueble ni un accesorio válido para una habitación.",
+            f"'{body.nombre}' no es un mueble ni un accesorio válido para una habitación.",
         )
     try:
         categoria, created = await _get_or_create_category(session, category_name)
         item = MuebleCatalogo(
             categoria_id=categoria.id,
-            nombre=body.nombre.strip(),
+            nombre=body.nombre,
             ancho=body.ancho,
             alto=body.alto,
             profundidad=body.profundidad,
         )
         session.add(item)
         await session.commit()
-    except (SQLAlchemyError, OSError) as exc:
+    except DATABASE_ERRORS as exc:
         await session.rollback()
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, "No se pudo guardar en la base de datos."
-        ) from exc
+        raise database_unavailable() from exc
 
     return CatalogFurnitureOut(
         id=item.id,
