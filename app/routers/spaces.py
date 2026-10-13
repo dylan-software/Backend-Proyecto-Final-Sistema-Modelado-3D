@@ -307,3 +307,5 @@ async def delete_catalog_furniture(
         furniture = await session.scalar(select(MuebleCatalogo).where(MuebleCatalogo.id == furniture_id))
     except DATABASE_ERRORS as exc:
         raise database_unavailable() from exc
+    if furniture is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"No existe un mueble con id {furniture_id}.")
