@@ -74,3 +74,37 @@ Convención de coordenadas: metros, eje **y hacia arriba**. La habitación ocupa
 `[0, ancho] × [0, alto] × [0, profundidad]`; el origen es la esquina mínima de las superficies
 detectadas. En cada mueble, `posicion_x`/`posicion_z` son el centro de su base y `posicion_y` la
 altura de esa base.
+
+## Estructura de datos: Octree
+
+Un **octree** es un árbol en el que cada nodo representa un cubo del espacio y, cuando hace falta,
+se divide en **8 cubos hijos** (octantes) de la mitad de lado. Es la extensión a 3D del quadtree.
+Implementación: `app/geometry/octree.py`.
+
+Cada `OctreeNode` guarda:
+
+- `center` y `half_size`: el cubo `[center − half_size, center + half_size]` en los tres ejes.
+- `entries`: los puntos (con un dato asociado opcional) si el nodo es hoja.
+- `children`: los 8 hijos, o `None` mientras sea hoja.
+- `capacity` (8) y `max_depth` (8): cuántos puntos admite una hoja y cuántas veces se puede dividir.
+
+**Particionado.** Al dividir, cada hijo se desplaza `±half_size/2` en x, y, z respecto al centro del
+padre. El hijo que corresponde a un punto se calcula con tres comparaciones contra el centro,
+que forman un índice de 3 bits:
+
+```
+índice = 4·[x ≥ cx] + 2·[y ≥ cy] + 1·[z ≥ cz]        (0 … 7)
+```
+
+**Inserción.** Se baja desde la raíz eligiendo el octante con esa fórmula. Si la hoja tiene sitio
+(o ya está en `max_depth`) el punto se guarda ahí; si está llena, se divide, reparte sus puntos
+entre los hijos y la inserción continúa en el hijo correcto.
+
+**Búsqueda por caja** (`query_box`). Recursiva: un nodo cuyo cubo no se solapa con la caja buscada
+se descarta entero junto con todo su subárbol; en las hojas se comprueban los puntos uno a uno.
+Esta poda es lo que la hace más rápida que recorrer la nube completa.
+
+**Uso en el sistema.** Tras RANSAC, los puntos que no pertenecen a ninguna superficie (muebles
+existentes, objetos y ruido) se insertan en un octree. Para cada mueble propuesto por la IA se
+pregunta cuántos de esos puntos caen dentro de su caja; si son 5 o más, hay un objeto real en ese
+lugar y el mueble se descarta.
