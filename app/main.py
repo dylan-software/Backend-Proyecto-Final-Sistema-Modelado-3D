@@ -1,4 +1,5 @@
 import logging
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -17,6 +18,8 @@ from app.utils.middlewares import PROCESS_TIME_HEADER, AuditLoggingMiddleware
 configure_logging()
 logger = logging.getLogger(__name__)
 
+CORS_ORIGINS = ["*"]
+
 
 @asynccontextmanager
 async def lifespan(app):
@@ -34,7 +37,7 @@ app = FastAPI(title="Sistema de Modelado 3D", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
     # Browsers hide non-standard response headers from cross-origin JavaScript unless they are exposed.
@@ -46,9 +49,31 @@ app.add_middleware(AuditLoggingMiddleware)
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
-    """Last-resort handler for errors no endpoint caught: logs the traceback and answers 500."""
-    logger.exception("Unhandled error in %s %s", request.method, request.url.path)
-    return JSONResponse(status_code=500, content={"detail": "Error interno del servidor."})
+    """Last-resort handler for errors no endpoint caught: logs the traceback and answers 500.
+
+    The client only gets a generic message and a request_id; the exception text, which may contain
+    queries, connection strings or file paths, stays in the server log under that same id.
+    """
+    request_id = uuid.uuid4().hex[:12]
+    logger.exception("request_id=%s Unhandled error in %s %s", request_id, request.method, request.url.path)
+    headers = {}
+    # This response is built outside CORSMiddleware, so the CORS header has to be set here or the
+    # browser hides the body from the frontend and reports a CORS error instead.
+    origin = request.headers.get("origin")
+    if "*" in CORS_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = "*"
+    elif origin in CORS_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Vary"] = "Origin"
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Error interno del servidor.",
+            "error": "internal_server_error",
+            "request_id": request_id,
+        },
+        headers=headers,
+    )
 
 
 app.include_router(auth_router)
