@@ -105,3 +105,19 @@ class CatalogFurnitureOut(BaseModel):
 
 class SpaceOut(RoomOut):
     muebles: list[FurnitureOut]
+
+
+class CatalogItemOut(BaseModel):
+    id: int
+    nombre: str
+    categoria_id: int
+    categoria: str
+    ancho: float
+    alto: float
+    profundidad: float
+
+
+class UserSpacesOut(BaseModel):
+    user_id: str
+    habitaciones: list[SpaceOut]
+    catalogo: list[CatalogItemOut]
