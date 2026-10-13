@@ -19,3 +19,11 @@ class SpatialIndex(Protocol):
     def insert(self, point: ArrayLike) -> bool: ...
 
     def query_box(self, box_min: ArrayLike, box_max: ArrayLike) -> Sequence[object]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class SpatialEntry(Generic[T]):
+    """A point stored in a spatial index together with an optional payload, e.g. a furniture id."""
+
+    point: Vector3
+    payload: T | None = None
