@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.database.connection import engine
+from app.database.connection import add_missing_user_columns, engine
 from app.geometry.router import router as geometry_router
 from app.models.space import Base
 from app.routers.auth import router as auth_router
@@ -27,6 +27,7 @@ async def lifespan(app):
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await add_missing_user_columns(conn)
     except DATABASE_ERRORS as exc:
         # Keep serving the endpoints that do not need the database.
         logger.warning("Database unreachable at startup, tables were not created: %s", exc)
