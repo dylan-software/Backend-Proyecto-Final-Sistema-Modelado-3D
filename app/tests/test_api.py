@@ -352,3 +352,17 @@ async def test_validate_furniture_coherence_sends_strict_prompt(monkeypatch):
     assert user == {"role": "user", "content": '"Silla"'}
     assert sent["temperature"] == 0
     assert await semantic_filter.validate_furniture_coherence("Algoritmo") is False
+
+
+async def test_delete_catalog_furniture(client, db_sessions, fake_validator):
+    kept = (await client.post("/api/v1/spaces/catalog", json=catalog_item("Silla"))).json()
+    removed = (await client.post("/api/v1/spaces/catalog", json=catalog_item("Puff"))).json()
+
+    response = await client.delete(f"/api/v1/spaces/furniture/{removed['id']}")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"success": True, "message": "Furniture item successfully removed"}
+    async with db_sessions() as session:
+        assert [m.id for m in (await session.scalars(select(MuebleCatalogo))).all()] == [kept["id"]]
+        # The category is shared with the remaining item, so it is not deleted.
+        assert [c.nombre for c in (await session.scalars(select(Categoria))).all()] == ["Sillas"]
