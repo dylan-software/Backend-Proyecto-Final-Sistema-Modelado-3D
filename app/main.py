@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from app.database.connection import add_missing_user_columns, engine
 from app.geometry.router import router as geometry_router
 from app.models.space import Base
-from app.routers.auth import router as auth_router
+from app.routers import auth
 from app.routers.errors import DATABASE_ERRORS
 from app.routers.spaces import router as spaces_router
 from app.utils.logging_config import configure_logging
@@ -84,7 +84,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     )
 
 
-app.include_router(auth_router)
+app.include_router(auth.router)
 app.include_router(geometry_router)
 app.include_router(spaces_router)
 
