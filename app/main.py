@@ -13,7 +13,7 @@ from app.routers.auth import router as auth_router
 from app.routers.errors import DATABASE_ERRORS
 from app.routers.spaces import router as spaces_router
 from app.utils.logging_config import configure_logging
-from app.utils.middlewares import PROCESS_TIME_HEADER, AuditLoggingMiddleware
+from app.utils.middlewares import PROCESS_TIME_HEADER, AuditLoggingMiddleware, TrailingSlashMiddleware
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -36,6 +36,8 @@ async def lifespan(app):
 
 app = FastAPI(title="Sistema de Modelado 3D", lifespan=lifespan)
 
+# Innermost middleware: routes match with or without a trailing slash, without a 307 redirect.
+app.add_middleware(TrailingSlashMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
