@@ -27,14 +27,14 @@ servidor sigue atendiendo otras peticiones mientras calcula.
 
 ```
 app/
-├── main.py                 instancia FastAPI, CORS y creación de tablas al arrancar
+├── main.py                 instancia FastAPI, CORS, middleware de auditoría, manejador de errores 500
 ├── config.py               configuración centralizada (pydantic-settings)
 ├── database/connection.py  motor y fábrica de sesiones asíncronas
 ├── models/space.py         tablas habitaciones y muebles_sugeridos
 ├── schemas/space.py        esquemas Pydantic de entrada y salida
 ├── geometry/               octree, colisiones, filtro RANSAC y endpoints /geometry
 ├── services/omniroute.py   cliente de OmniRoute
-├── utils/                  tipos compartidos (Protocol, Generic) y ayudas de imagen
+├── utils/                  tipos compartidos, ayudas de imagen, logs (logging_config) y middlewares
 ├── routers/spaces.py       pipeline POST /api/v1/spaces/analyze
 └── tests/                  pruebas unitarias y de integración
 ```
@@ -87,6 +87,53 @@ Convención de coordenadas: metros, eje **y hacia arriba**. La habitación ocupa
 `[0, ancho] × [0, alto] × [0, profundidad]`; el origen es la esquina mínima de las superficies
 detectadas. En cada mueble, `posicion_x`/`posicion_z` son el centro de su base y `posicion_y` la
 altura de esa base.
+
+## Telemetría y auditoría
+
+Cada petición HTTP pasa por `AuditLoggingMiddleware` (`app/utils/middlewares.py`), registrado como
+el middleware más externo, así que su medición incluye CORS, la validación de Pydantic y el endpoint
+completo (RANSAC, octree, OmniRoute y base de datos).
+
+**Log por petición.** Una línea `clave=valor` por petición, con marca de tiempo UTC al milisegundo
+(`app/utils/logging_config.py`):
+
+```
+2026-10-12T18:04:05.123Z INFO app.audit method=POST path=/geometry/collision status=200 duration_ms=4.81
+2026-10-12T18:04:09.870Z WARNING app.audit method=POST path=/api/v1/spaces/analyze status=502 duration_ms=60012.40
+2026-10-12T18:04:11.002Z ERROR app.audit method=GET path=/api/v1/spaces/catalog status=500 duration_ms=3.74
+```
+
+| Nivel | Cuándo |
+|---|---|
+| `INFO` | Respuestas 1xx–4xx. |
+| `WARNING` | Respuestas 5xx: `502` (fallo o respuesta inválida de OmniRoute), `503` (base de datos). |
+| `ERROR` | Excepción no controlada; además se registra su traza completa con un `request_id`. |
+
+Solo se registra la ruta, nunca el *query string* ni el cuerpo, para no volcar datos del usuario.
+La duración se mide con `time.perf_counter()`, un reloj monótono que no salta si se ajusta la hora
+del sistema.
+
+**Cabecera `X-Process-Time`.** Toda respuesta incluye el tiempo de proceso del servidor en
+milisegundos (`X-Process-Time: 12.34`). Está declarada en `expose_headers` de CORS, así que el
+frontend puede leerla aunque se sirva desde otro dominio:
+
+```js
+const res = await fetch(`${API}/geometry/collision`, { method: "POST", body, headers });
+console.log("servidor:", res.headers.get("X-Process-Time"), "ms");
+```
+
+La diferencia entre el tiempo total que mide el navegador y `X-Process-Time` es la latencia de red.
+
+**Errores 500.** Un error que ningún endpoint captura llega al manejador global de `app/main.py`,
+que guarda la traza en el log y responde sin detalles técnicos:
+
+```json
+{ "detail": "Error interno del servidor.", "error": "internal_server_error", "request_id": "bb83064a8c95" }
+```
+
+El `request_id` aparece también en la línea del log (`request_id=bb83064a8c95 Unhandled error in …`)
+para localizar el fallo. Esta respuesta lleva su propia cabecera CORS, porque Starlette la genera
+fuera de `CORSMiddleware` y sin ella el navegador mostraría un error de CORS en lugar del JSON.
 
 ## Estructura de datos: Octree
 
@@ -141,6 +188,25 @@ límite aunque muchos puntos caigan en el mismo sitio (esas hojas simplemente ad
 Comparación con la alternativa ingenua: validar `m` muebles recorriendo toda la nube cuesta
 O(m · n); con el octree cuesta O(n log n) para construirlo una vez más O(m · (log n + k)) para las
 consultas.
+
+### Tiempos medidos del Octree
+
+Promedios de 5 construcciones (`from_points`) y 200 consultas (`query_box`) con cajas del tamaño de
+un mueble (0.5 × 0.9 × 0.5 m) sobre puntos uniformes en una habitación de 4 × 3 × 5 m. Medido en un
+portátil Intel con Python 3.14; en otra máquina las cifras absolutas cambian, pero no su proporción.
+
+| Puntos `n` | Construcción | Consulta por caja |
+|---:|---:|---:|
+| 500 | 8 ms | 0.26 ms |
+| 2 000 | 36 ms | 0.44 ms |
+| 10 000 | 218 ms | 1.0 ms |
+| 50 000 | 1.3 s | 3.2 ms |
+
+La construcción crece casi linealmente con `n`, de acuerdo con O(n log n). La consulta crece mucho
+más despacio porque la poda descarta la mayor parte del árbol. En `/api/v1/spaces/analyze` el octree
+solo guarda los puntos residuales que deja RANSAC (unos cientos en una habitación típica), así que su
+coste es de unos pocos milisegundos frente a los 2–3 s de RANSAC. `X-Process-Time` y el log de
+auditoría permiten comprobarlo en cada petición.
 
 Para los muebles ya colocados se usa además un `cKDTree` de SciPy sobre sus centros
 (construcción O(m log m)): solo los muebles cuya esfera envolvente alcanza la del nuevo se comparan
