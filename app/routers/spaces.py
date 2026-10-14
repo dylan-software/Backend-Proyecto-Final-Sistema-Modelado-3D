@@ -309,3 +309,9 @@ async def delete_catalog_furniture(
         raise database_unavailable() from exc
     if furniture is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"No existe un mueble con id {furniture_id}.")
+    try:
+        await session.delete(furniture)
+        await session.commit()
+    except DATABASE_ERRORS as exc:
+        await session.rollback()
+        raise database_unavailable() from exc
