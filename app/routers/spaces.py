@@ -288,3 +288,18 @@ async def add_catalog_furniture(
         alto=item.alto,
         profundidad=item.profundidad,
     )
+
+
+@router.delete("/furniture/{furniture_id}")
+async def delete_catalog_furniture(
+    furniture_id: int = Path(gt=0),
+    session: AsyncSession = Depends(get_session),
+):
+    """Remove one piece of furniture from the catalog. Its category is kept for other items.
+
+    Returns:
+        200 with {"success": true, "message": ...}.
+
+    Raises:
+        HTTPException: 404 no catalog item has that id, 503 database failure.
+    """
