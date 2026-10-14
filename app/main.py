@@ -19,6 +19,7 @@ configure_logging()
 logger = logging.getLogger(__name__)
 
 CORS_ORIGINS = ["*"]
+CORS_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 
 
 @asynccontextmanager
@@ -38,10 +39,14 @@ app = FastAPI(title="Sistema de Modelado 3D", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
-    allow_methods=["*"],
+    # With credentials the wildcard is not valid for browsers, so Starlette echoes the request Origin.
+    allow_credentials=True,
+    allow_methods=CORS_METHODS,
     allow_headers=["*"],
     # Browsers hide non-standard response headers from cross-origin JavaScript unless they are exposed.
     expose_headers=[PROCESS_TIME_HEADER],
+    # Browsers cache the preflight for 10 minutes instead of sending an OPTIONS before every request.
+    max_age=600,
 )
 # Added last, so it is the outermost middleware and its timing covers CORS and the endpoint itself.
 app.add_middleware(AuditLoggingMiddleware)
@@ -59,11 +64,11 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     headers = {}
     # This response is built outside CORSMiddleware, so the CORS header has to be set here or the
     # browser hides the body from the frontend and reports a CORS error instead.
+    # Credentials are allowed, so the origin is echoed back: browsers reject "*" in that case.
     origin = request.headers.get("origin")
-    if "*" in CORS_ORIGINS:
-        headers["Access-Control-Allow-Origin"] = "*"
-    elif origin in CORS_ORIGINS:
+    if origin and ("*" in CORS_ORIGINS or origin in CORS_ORIGINS):
         headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
         headers["Vary"] = "Origin"
     return JSONResponse(
         status_code=500,
