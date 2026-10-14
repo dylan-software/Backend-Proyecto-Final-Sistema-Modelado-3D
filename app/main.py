@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from app.database.connection import add_missing_user_columns, engine
 from app.geometry.router import router as geometry_router
@@ -93,3 +94,18 @@ app.include_router(spaces_router)
 async def health():
     """Liveness probe for the frontend and the hosting platform."""
     return {"status": "ok"}
+
+
+@app.get("/api/v1/health")
+async def database_health():
+    """Readiness probe: runs a trivial query to confirm the live connection to Supabase.
+
+    Answers 503 when the database is unreachable, so monitors can tell "process up" from "service usable".
+    """
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except DATABASE_ERRORS as exc:
+        logger.warning("Health check could not reach the database: %s", exc)
+        return JSONResponse(status_code=503, content={"status": "degraded", "database": "offline"})
+    return {"status": "online", "database": "online"}
