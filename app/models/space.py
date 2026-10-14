@@ -24,9 +24,7 @@ class MuebleSugerido(Base):
     __tablename__ = "muebles_sugeridos"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    habitacion_id: Mapped[int] = mapped_column(
-        ForeignKey("habitaciones.id", ondelete="CASCADE"), index=True
-    )
+    habitacion_id: Mapped[int] = mapped_column(ForeignKey("habitaciones.id", ondelete="CASCADE"), index=True)
     nombre: Mapped[str] = mapped_column(String(120))
     ancho: Mapped[float] = mapped_column(Float)
     alto: Mapped[float] = mapped_column(Float)

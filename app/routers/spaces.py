@@ -4,7 +4,7 @@ import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.connection import get_session
@@ -189,11 +189,9 @@ async def analyze_space(
     try:
         session.add(room)
         await session.commit()
-    except (SQLAlchemyError, OSError) as exc:
+    except DATABASE_ERRORS as exc:
         await session.rollback()
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, "No se pudo guardar en la base de datos."
-        ) from exc
+        raise database_unavailable() from exc
 
     return AnalyzeResponse(
         habitacion=RoomOut(

@@ -83,14 +83,42 @@ async def fake_suggester(dims, estilo, instrucciones, superficies, contexto_visu
     return {
         "descripcion": f"Propuesta {estilo}",
         "muebles": [
-            {"nombre": "mesa", "ancho": 1, "alto": 0.8, "profundidad": 1,
-             "posicion_x": 1.5, "posicion_y": 0, "posicion_z": 1.5},
-            {"nombre": "armario", "ancho": 1, "alto": 2, "profundidad": 0.6,
-             "posicion_x": 3.8, "posicion_y": 0, "posicion_z": 1},  # sticks out of the x = 4 wall
-            {"nombre": "sillon", "ancho": 0.6, "alto": 0.6, "profundidad": 0.6,
-             "posicion_x": 3.2, "posicion_y": 0.1, "posicion_z": 4.2},  # inside the existing object
-            {"nombre": "silla", "ancho": 0.5, "alto": 0.9, "profundidad": 0.5,
-             "posicion_x": 1.6, "posicion_y": 0, "posicion_z": 1.6},  # overlaps the table
+            {
+                "nombre": "mesa",
+                "ancho": 1,
+                "alto": 0.8,
+                "profundidad": 1,
+                "posicion_x": 1.5,
+                "posicion_y": 0,
+                "posicion_z": 1.5,
+            },
+            {
+                "nombre": "armario",
+                "ancho": 1,
+                "alto": 2,
+                "profundidad": 0.6,
+                "posicion_x": 3.8,
+                "posicion_y": 0,
+                "posicion_z": 1,
+            },  # sticks out of the x = 4 wall
+            {
+                "nombre": "sillon",
+                "ancho": 0.6,
+                "alto": 0.6,
+                "profundidad": 0.6,
+                "posicion_x": 3.2,
+                "posicion_y": 0.1,
+                "posicion_z": 4.2,
+            },  # inside the existing object
+            {
+                "nombre": "silla",
+                "ancho": 0.5,
+                "alto": 0.9,
+                "profundidad": 0.5,
+                "posicion_x": 1.6,
+                "posicion_y": 0,
+                "posicion_z": 1.6,
+            },  # overlaps the table
             {"nombre": "lampara"},  # missing dimensions
         ],
     }
