@@ -17,7 +17,7 @@ from app.models.user import Usuario
 from app.routers.errors import DATABASE_ERRORS, database_unavailable
 from app.schemas.auth import TokenOut, UserLogin, UserOut, UserRegister
 
-router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+router = APIRouter(tags=["auth"])
 
 # scrypt cost parameters (n = CPU/memory cost, r = block size, p = parallelism).
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 2**14, 8, 1
