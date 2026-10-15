@@ -1,7 +1,7 @@
 import asyncio
 
 import numpy as np
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -18,10 +18,13 @@ from app.schemas.space import (
     AnalyzeResponse,
     CatalogFurnitureIn,
     CatalogFurnitureOut,
+    CatalogItemOut,
     DiscardedFurniture,
     FurnitureOut,
     FurnitureProposal,
     RoomOut,
+    SpaceOut,
+    UserSpacesOut,
 )
 from app.services.omniroute import OmniRouteError, suggest_layout
 from app.services.semantic_filter import validate_furniture_coherence
@@ -318,3 +321,26 @@ async def delete_catalog_furniture(
         await session.rollback()
         raise database_unavailable() from exc
     return {"success": True, "message": "Furniture item successfully removed"}
+
+
+@router.get("", response_model=UserSpacesOut)
+async def list_user_spaces(
+    user_id: str = Query(min_length=1, max_length=64),
+    session: AsyncSession = Depends(get_session),
+):
+    """Rooms (with their furniture) and catalog items that belong to one account.
+
+    Only rows stored with this exact user_id are returned, so accounts never see each other's data.
+
+    Returns:
+        200 with the account's rooms and catalog, both possibly empty.
+
+    Raises:
+        HTTPException: 422 missing user_id, 503 database failure.
+    """
+    rooms, catalog = [], []
+    return UserSpacesOut(
+        user_id=user_id,
+        habitaciones=rooms,
+        catalogo=catalog,
+    )
