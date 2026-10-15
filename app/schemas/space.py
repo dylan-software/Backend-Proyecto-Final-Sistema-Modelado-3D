@@ -75,6 +75,8 @@ class AnalyzeResponse(BaseModel):
 
 class CatalogFurnitureIn(BaseModel):
     nombre: str = Field(min_length=1, max_length=120)
+    # Account adding the item; without it the item is stored but no account can list it.
+    user_id: str | None = Field(None, min_length=1, max_length=64)
     # One of the fixed categories of the web interface, or "Others" to create a new one.
     categoria: str = Field(min_length=1, max_length=60)
     # Name of the new category; only used when categoria is "Others".
