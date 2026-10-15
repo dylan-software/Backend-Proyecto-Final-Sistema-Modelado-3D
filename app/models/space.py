@@ -54,6 +54,8 @@ class MuebleCatalogo(Base):
     __tablename__ = "muebles_catalogo"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Account that added the item; each account sees only its own catalog. Categories stay shared.
+    user_id: Mapped[str | None] = mapped_column(String(64), index=True)
     categoria_id: Mapped[int] = mapped_column(ForeignKey("categorias.id"), index=True)
     nombre: Mapped[str] = mapped_column(String(120))
     ancho: Mapped[float] = mapped_column(Float)
