@@ -1,13 +1,16 @@
 import asyncio
+import logging
+import os
 
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from pydantic import ValidationError
-from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, make_url, select
+from sqlalchemy.exc import ArgumentError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import Settings, get_settings
 from app.database.connection import get_session
 from app.geometry.collision import check_bounding_box_collision
 from app.geometry.octree import OctreeNode
@@ -32,6 +35,8 @@ from app.services.semantic_filter import validate_furniture_coherence
 from app.utils.helpers import ImageDecodeError, load_image_matrix, summarize_image
 
 router = APIRouter(prefix="/api/v1/spaces", tags=["spaces"])
+
+logger = logging.getLogger(__name__)
 
 # A box must contain at least this many leftover scan points to count as hitting a real object;
 # fewer are treated as sensor noise.
@@ -394,3 +399,27 @@ async def list_user_spaces(
             for item in catalog
         ],
     )
+
+
+@router.get("/debug-vars")
+async def debug_environment():
+    """Whether the cloud environment variables are being read, without revealing any of their values.
+
+    Each check is a boolean; it is written to the server log (visible in the Render dashboard) and
+    returned. Connection strings, passwords and keys never leave the process.
+    """
+    settings = get_settings()
+    try:
+        host = make_url(settings.database_url).host or ""
+    except ArgumentError:
+        host = ""
+    checks = {
+        "database_url_env": "DATABASE_URL" in os.environ,
+        "database_url_is_default": settings.database_url == Settings.model_fields["database_url"].default,
+        "database_host_is_supabase": host.endswith(".supabase.com") or host.endswith(".supabase.co"),
+        "omniroute_api_key_set": bool(settings.omniroute_api_key),
+        "omniroute_model_set": bool(settings.omniroute_model),
+        "jwt_secret_env": "JWT_SECRET" in os.environ,
+    }
+    logger.info("Environment check: %s", " ".join(f"{name}={value}" for name, value in checks.items()))
+    return checks
