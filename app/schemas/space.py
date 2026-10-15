@@ -5,6 +5,8 @@ Point = tuple[float, float, float]
 
 class AnalyzeRequest(BaseModel):
     nombre: str = Field(min_length=1, max_length=120)
+    # Account the room belongs to; without it the room is stored but no account can list it.
+    user_id: str | None = Field(None, min_length=1, max_length=64)
     estilo: str = Field("moderno", min_length=1, max_length=60)
     instrucciones: str | None = Field(None, max_length=1000)
     puntos: list[Point] = Field(min_length=3)
