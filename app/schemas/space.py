@@ -101,3 +101,7 @@ class CatalogFurnitureOut(BaseModel):
     ancho: float
     alto: float
     profundidad: float
+
+
+class SpaceOut(RoomOut):
+    muebles: list[FurnitureOut]
