@@ -345,9 +345,15 @@ async def list_user_spaces(
         .options(selectinload(Habitacion.muebles))
         .order_by(Habitacion.id)
     )
-    catalog = []
+    catalog_query = (
+        select(MuebleCatalogo)
+        .where(MuebleCatalogo.user_id == user_id)
+        .options(selectinload(MuebleCatalogo.categoria))
+        .order_by(MuebleCatalogo.id)
+    )
     try:
         rooms = (await session.scalars(rooms_query)).all()
+        catalog = (await session.scalars(catalog_query)).all()
     except DATABASE_ERRORS as exc:
         raise database_unavailable() from exc
     return UserSpacesOut(
@@ -375,5 +381,16 @@ async def list_user_spaces(
             )
             for room in rooms
         ],
-        catalogo=catalog,
+        catalogo=[
+            CatalogItemOut(
+                id=item.id,
+                nombre=item.nombre,
+                categoria_id=item.categoria_id,
+                categoria=item.categoria.nombre,
+                ancho=item.ancho,
+                alto=item.alto,
+                profundidad=item.profundidad,
+            )
+            for item in catalog
+        ],
     )
