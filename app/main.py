@@ -7,11 +7,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
+from app.config import get_settings
 from app.database.connection import add_missing_user_columns, engine
 from app.geometry.router import router as geometry_router
 from app.models.space import Base
 from app.routers import auth
 from app.routers.errors import DATABASE_ERRORS
+from app.routers.spaces import debug_router
 from app.routers.spaces import router as spaces_router
 from app.utils.logging_config import configure_logging
 from app.utils.middlewares import PROCESS_TIME_HEADER, AuditLoggingMiddleware, TrailingSlashMiddleware
@@ -19,7 +21,7 @@ from app.utils.middlewares import PROCESS_TIME_HEADER, AuditLoggingMiddleware, T
 configure_logging()
 logger = logging.getLogger(__name__)
 
-CORS_ORIGINS = ["*"]
+CORS_ORIGINS = get_settings().cors_origins
 CORS_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 
 
@@ -43,10 +45,10 @@ app.add_middleware(TrailingSlashMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
-    # With credentials the wildcard is not valid for browsers, so Starlette echoes the request Origin.
-    allow_credentials=True,
+    # Sessions travel in the Authorization header, not in cookies, so credentials stay off.
+    allow_credentials=False,
     allow_methods=CORS_METHODS,
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type"],
     # Browsers hide non-standard response headers from cross-origin JavaScript unless they are exposed.
     expose_headers=[PROCESS_TIME_HEADER],
     # Browsers cache the preflight for 10 minutes instead of sending an OPTIONS before every request.
@@ -68,11 +70,10 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     headers = {}
     # This response is built outside CORSMiddleware, so the CORS header has to be set here or the
     # browser hides the body from the frontend and reports a CORS error instead.
-    # Credentials are allowed, so the origin is echoed back: browsers reject "*" in that case.
+    # Only allowed origins are echoed back, exactly as CORSMiddleware does.
     origin = request.headers.get("origin")
-    if origin and ("*" in CORS_ORIGINS or origin in CORS_ORIGINS):
+    if origin and origin in CORS_ORIGINS:
         headers["Access-Control-Allow-Origin"] = origin
-        headers["Access-Control-Allow-Credentials"] = "true"
         headers["Vary"] = "Origin"
     return JSONResponse(
         status_code=500,
@@ -88,6 +89,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 app.include_router(auth.router, prefix="/api/v1/auth")
 app.include_router(geometry_router)
 app.include_router(spaces_router)
+if get_settings().enable_debug_routes:
+    app.include_router(debug_router)
 
 
 @app.get("/")

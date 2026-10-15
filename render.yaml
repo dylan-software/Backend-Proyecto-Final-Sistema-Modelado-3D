@@ -12,6 +12,10 @@ services:
         sync: false # Supabase connection string
       - key: JWT_SECRET
         generateValue: true
+      - key: ENVIRONMENT
+        value: production
+      - key: ALLOWED_ORIGINS
+        sync: false # Vercel URL(s), comma-separated
       - key: OMNIROUTE_BASE_URL
         sync: false
       - key: OMNIROUTE_API_KEY

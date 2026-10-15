@@ -1,7 +1,7 @@
 import secrets
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,14 +20,42 @@ class Settings(BaseSettings):
     omniroute_timeout: float = 60.0
     jwt_secret: str = ""
     jwt_expire_minutes: int = 60
+    # "production" makes the server refuse to start without a fixed JWT_SECRET.
+    environment: str = "development"
+    # Frontend origins allowed by CORS, comma-separated (e.g. the Vercel URL and its previews).
+    allowed_origins: str = "http://localhost:3000"
+    # Registers GET /api/v1/spaces/debug-vars; off unless explicitly enabled.
+    enable_debug_routes: bool = False
 
-    @field_validator("jwt_secret")
-    @classmethod
-    def random_secret_if_empty(cls, value):
-        # Without JWT_SECRET a random key is generated, so tokens stop working when the server restarts.
-        return value or secrets.token_urlsafe(32)
+    @property
+    def is_production(self):
+        return self.environment.strip().lower() == "production"
+
+    @model_validator(mode="after")
+    def random_secret_in_development(self):
+        # Development only: a random key per start, so tokens stop working when the server restarts.
+        # In production the secret stays empty and check_production_ready() stops the server.
+        if not self.jwt_secret and not self.is_production:
+            self.jwt_secret = secrets.token_urlsafe(32)
+        return self
+
+    def check_production_ready(self):
+        """Raise if the configuration is unsafe to serve production traffic.
+
+        A plain RuntimeError on purpose: a pydantic ValidationError would print every setting,
+        including DATABASE_URL and the API keys, in the deploy log.
+        """
+        if self.is_production and not self.jwt_secret:
+            raise RuntimeError("JWT_SECRET must be set when ENVIRONMENT=production; refusing to start.")
+
+    @property
+    def cors_origins(self):
+        """ALLOWED_ORIGINS as a list, without blanks or trailing slashes (browsers send none)."""
+        return [origin.strip().rstrip("/") for origin in self.allowed_origins.split(",") if origin.strip()]
 
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    settings.check_production_ready()
+    return settings

@@ -16,6 +16,7 @@ from app.geometry.collision import check_bounding_box_collision
 from app.geometry.octree import OctreeNode
 from app.geometry.ransac_filter import clean_point_cloud
 from app.models.space import Categoria, Habitacion, MuebleCatalogo, MuebleSugerido
+from app.routers.auth import ensure_same_user, get_current_user
 from app.routers.errors import DATABASE_ERRORS, database_unavailable
 from app.schemas.space import (
     AnalyzeRequest,
@@ -35,6 +36,9 @@ from app.services.semantic_filter import validate_furniture_coherence
 from app.utils.helpers import ImageDecodeError, load_image_matrix, summarize_image
 
 router = APIRouter(prefix="/api/v1/spaces", tags=["spaces"])
+
+# Only included by app.main when ENABLE_DEBUG_ROUTES=true.
+debug_router = APIRouter(prefix="/api/v1/spaces", tags=["debug"])
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +118,7 @@ async def analyze_space(
     body: AnalyzeRequest,
     session: AsyncSession = Depends(get_session),
     suggester=Depends(get_layout_suggester),
+    current_user: str = Depends(get_current_user),
 ):
     """Analyze a scanned room and store a validated furniture layout.
 
@@ -126,9 +131,10 @@ async def analyze_space(
         201 with the stored room, accepted and discarded furniture, surfaces and visual context.
 
     Raises:
-        HTTPException: 422 invalid photo or undeducible dimensions, 502 OmniRoute failure,
-            503 database failure.
+        HTTPException: 401 no valid session, 403 user_id of another account, 422 invalid photo or
+            undeducible dimensions, 502 OmniRoute failure, 503 database failure.
     """
+    owner = ensure_same_user(body.user_id, current_user)
     # 1. Isolate floor, walls and ceiling from the scan; whatever is left are objects or noise.
     # The photo is decoded while RANSAC runs; both are CPU-bound and run in worker threads.
     try:
@@ -189,7 +195,7 @@ async def analyze_space(
 
     # 4. Store the room together with its validated layout.
     room = Habitacion(
-        user_id=body.user_id,
+        user_id=owner,
         nombre=body.nombre,
         ancho=float(dims[0]),
         alto=float(dims[1]),
@@ -249,6 +255,7 @@ async def add_catalog_furniture(
     body: CatalogFurnitureIn,
     session: AsyncSession = Depends(get_session),
     validator=Depends(get_coherence_validator),
+    current_user: str = Depends(get_current_user),
 ):
     """Add a piece of furniture to the catalog, creating its category when it is new.
 
@@ -260,9 +267,10 @@ async def add_catalog_furniture(
         201 with the stored item, its category and whether that category was just created.
 
     Raises:
-        HTTPException: 422 "Others" without custom_category or incoherent name, 502 OmniRoute failure,
-            503 database failure.
+        HTTPException: 401 no valid session, 403 user_id of another account, 422 "Others" without
+            custom_category or incoherent name, 502 OmniRoute failure, 503 database failure.
     """
+    owner = ensure_same_user(body.user_id, current_user)
     category_name = _category_name(body)
     try:
         coherent = await validator(body.nombre)
@@ -276,7 +284,7 @@ async def add_catalog_furniture(
     try:
         categoria, created = await _get_or_create_category(session, category_name)
         item = MuebleCatalogo(
-            user_id=body.user_id,
+            user_id=owner,
             categoria_id=categoria.id,
             nombre=body.nombre,
             ancho=body.ancho,
@@ -305,17 +313,22 @@ async def add_catalog_furniture(
 async def delete_catalog_furniture(
     furniture_id: int = Path(gt=0),
     session: AsyncSession = Depends(get_session),
+    current_user: str = Depends(get_current_user),
 ):
-    """Remove one piece of furniture from the catalog. Its category is kept for other items.
+    """Remove one piece of furniture from the session's catalog. Its category is kept for other items.
 
     Returns:
         200 with {"success": true, "message": ...}.
 
     Raises:
-        HTTPException: 404 no catalog item has that id, 503 database failure.
+        HTTPException: 401 no valid session, 404 the session's account has no catalog item with
+            that id (items of other accounts are reported the same way), 503 database failure.
     """
+    query = select(MuebleCatalogo).where(
+        MuebleCatalogo.id == furniture_id, MuebleCatalogo.user_id == current_user
+    )
     try:
-        furniture = await session.scalar(select(MuebleCatalogo).where(MuebleCatalogo.id == furniture_id))
+        furniture = await session.scalar(query)
     except DATABASE_ERRORS as exc:
         raise database_unavailable() from exc
     if furniture is None:
@@ -331,19 +344,21 @@ async def delete_catalog_furniture(
 
 @router.get("", response_model=UserSpacesOut)
 async def list_user_spaces(
-    user_id: str = Query(min_length=1, max_length=64),
+    user_id: str | None = Query(None, min_length=1, max_length=64),
     session: AsyncSession = Depends(get_session),
+    current_user: str = Depends(get_current_user),
 ):
-    """Rooms (with their furniture) and catalog items that belong to one account.
+    """Rooms (with their furniture) and catalog items of the session's account.
 
-    Only rows stored with this exact user_id are returned, so accounts never see each other's data.
+    The account comes from the token; user_id is optional and only accepted if it matches it.
 
     Returns:
         200 with the account's rooms and catalog, both possibly empty.
 
     Raises:
-        HTTPException: 422 missing user_id, 503 database failure.
+        HTTPException: 401 no valid session, 403 user_id of another account, 503 database failure.
     """
+    user_id = ensure_same_user(user_id, current_user)
     rooms_query = (
         select(Habitacion)
         .where(Habitacion.user_id == user_id)
@@ -379,7 +394,7 @@ async def list_user_spaces(
     )
 
 
-@router.get("/debug-vars")
+@debug_router.get("/debug-vars")
 async def debug_environment():
     """Whether the cloud environment variables are being read, without revealing any of their values.
 
