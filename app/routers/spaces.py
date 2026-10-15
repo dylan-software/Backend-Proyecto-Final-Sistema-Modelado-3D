@@ -180,6 +180,7 @@ async def analyze_space(
 
     # 4. Store the room together with its validated layout.
     room = Habitacion(
+        user_id=body.user_id,
         nombre=body.nombre,
         ancho=float(dims[0]),
         alto=float(dims[1]),
