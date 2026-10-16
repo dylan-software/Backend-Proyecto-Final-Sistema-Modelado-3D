@@ -412,3 +412,16 @@ async def test_trailing_slash_is_served_without_redirect(client, db_sessions):
 
     assert response.status_code == 200, response.text
     assert response.json() == {"user_id": "user-a", "habitaciones": [], "catalogo": []}
+
+
+async def test_cors_preflight_allows_delete_with_credentials(client):
+    origin = "https://proyecto-3d.vercel.app"
+    response = await client.options(
+        "/api/v1/spaces/furniture/1",
+        headers={"Origin": origin, "Access-Control-Request-Method": "DELETE"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+    assert response.headers["access-control-allow-credentials"] == "true"
+    assert "DELETE" in response.headers["access-control-allow-methods"]
