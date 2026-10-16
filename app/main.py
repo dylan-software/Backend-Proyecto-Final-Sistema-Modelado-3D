@@ -84,7 +84,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     )
 
 
-app.include_router(auth.router)
+app.include_router(auth.router, prefix="/api/v1/auth")
 app.include_router(geometry_router)
 app.include_router(spaces_router)
 
