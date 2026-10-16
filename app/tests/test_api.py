@@ -366,3 +366,10 @@ async def test_delete_catalog_furniture(client, db_sessions, fake_validator):
         assert [m.id for m in (await session.scalars(select(MuebleCatalogo))).all()] == [kept["id"]]
         # The category is shared with the remaining item, so it is not deleted.
         assert [c.nombre for c in (await session.scalars(select(Categoria))).all()] == ["Sillas"]
+
+
+async def test_delete_catalog_furniture_not_found(client, db_sessions):
+    response = await client.delete("/api/v1/spaces/furniture/999")
+
+    assert response.status_code == 404
+    assert "999" in response.json()["detail"]
