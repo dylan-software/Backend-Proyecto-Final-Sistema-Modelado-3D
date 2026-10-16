@@ -405,3 +405,10 @@ async def test_spaces_require_user_id(client, db_sessions):
     response = await client.get("/api/v1/spaces")
 
     assert response.status_code == 422
+
+
+async def test_trailing_slash_is_served_without_redirect(client, db_sessions):
+    response = await client.get("/api/v1/spaces/", params={"user_id": "user-a"})
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"user_id": "user-a", "habitaciones": [], "catalogo": []}
