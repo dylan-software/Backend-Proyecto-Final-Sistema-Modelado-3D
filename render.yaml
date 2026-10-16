@@ -1,44 +1,19 @@
-# Render Blueprint for the backend service. Deploy with:
+# Render Blueprint for the FastAPI backend. Deploy with:
 # Render dashboard -> New -> Blueprint -> point at this repo (the repo root is this folder).
-#
-# The same backend/Dockerfile is what makes Railway, Azure Container
-# Apps/App Service, and AWS (App Runner/ECS/Elastic Beanstalk) work too —
-# only the platform-specific env var screen changes, not the image.
 services:
   - type: web
     name: proyecto3d-backend
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-    healthCheckPath: /api/health
+    healthCheckPath: /
     envVars:
-      - key: PORT
-        value: "4000"
-      - key: FRONTEND_URL
-        sync: false # set to the Vercel production URL (and preview URL, comma-separated) after the frontend is deployed
+      - key: PYTHON_VERSION
+        value: "3.12.8"
       - key: DATABASE_URL
         sync: false # Supabase connection string
-      - key: S3_BUCKET
+      - key: JWT_SECRET
+        generateValue: true
+      - key: OMNIROUTE_BASE_URL
         sync: false
-      - key: S3_REGION
+      - key: OMNIROUTE_API_KEY
         sync: false
-      - key: S3_ACCESS_KEY_ID
+      - key: OMNIROUTE_MODEL
         sync: false
-      - key: S3_SECRET_ACCESS_KEY
-        sync: false
-      - key: S3_ENDPOINT
-        sync: false
-      - key: AI_API_KEY
-        sync: false
-      - key: AI_SEGMENTATION_URL
-        sync: false
-      - key: AI_LAYOUT_URL
-        sync: false
-      - key: AI_EMBEDDINGS_URL
-        sync: false
-      - key: AI_LIGHTING_URL
-        sync: false
-      - key: OPENROUTER_API_KEY
-        sync: false
-      - key: OPENROUTER_MODEL
-        value: openai/gpt-4o-mini
