@@ -399,3 +399,9 @@ async def test_spaces_are_isolated_per_account(client, db_sessions, fake_validat
     assert [r["nombre"] for r in user_b["habitaciones"]] == ["Sala B"]
     assert [m["nombre"] for m in user_b["catalogo"]] == ["Puff"]
     assert stranger["habitaciones"] == stranger["catalogo"] == []
+
+
+async def test_spaces_require_user_id(client, db_sessions):
+    response = await client.get("/api/v1/spaces")
+
+    assert response.status_code == 422
