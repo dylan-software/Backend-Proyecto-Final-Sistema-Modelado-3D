@@ -74,6 +74,59 @@ def test_contains_rectangle_respects_the_real_shape():
     assert room.contains_rectangle(2.5, 2.5, 1, 1) is False
 
 
+# Real 21-vertex room (meters) with a notch at the top: x in [2, 4], y in [0, 1.5] is outside.
+NOTCHED_ROOM = [
+    (0, 0),
+    (2, 0),
+    (2, 1.5),
+    (4, 1.5),
+    (4, 0),
+    (6, 0),
+    (6, 1.5),
+    (7.5, 1.5),
+    (7.5, 4),
+    (6, 4),
+    (6, 5),
+    (4.5, 5),
+    (4.5, 3),
+    (2.5, 3),
+    (2.5, 4),
+    (3.5, 4),
+    (3.5, 5),
+    (3.5, 6),
+    (2.5, 6),
+    (2.5, 5),
+    (0, 5),
+]
+
+
+def test_rectangle_with_every_corner_inside_can_still_cross_a_notch():
+    room = Room(NOTCHED_ROOM, 2.5)
+
+    # Corners at x = 1 and x = 5 are both in the floor, but the middle crosses the notch.
+    assert room.contains_rectangle(1, 0.2, 4, 0.5) is False
+    assert room.contains_rectangle(0.2, 0.2, 1.5, 0.5) is True
+    assert room.contains_rectangle(4.2, 0.2, 1.5, 0.5) is True
+    # Exactly the notch: every corner is on a wall and no wall crosses it, but it is outside the room.
+    assert room.contains_rectangle(2, 0, 2, 1.5) is False
+
+
+def test_rectangle_pushed_against_walls_is_inside():
+    room = irregular_room()
+
+    # Shares the x = 0 and y = 0 walls, and the inner corner's walls of the L.
+    assert room.contains_rectangle(0, 0, 4, 3) is True
+    assert room.contains_rectangle(0, 3, 2, 2) is True
+
+
+def test_rectangle_spanning_the_inner_corner_of_the_l_is_outside():
+    # Every corner is inside the L, but the reflex vertex (2, 3) sits inside the rectangle.
+    room = Room([(0, 0), (4, 0), (4, 3), (2, 3), (2, 5), (0, 5)], 2.6)
+
+    assert room.contains_rectangle(1, 2, 0.9, 2) is True
+    assert room.contains_rectangle(1.5, 2.5, 1, 1) is False
+
+
 def test_bounding_box():
     box = irregular_room().bounding_box()
 
