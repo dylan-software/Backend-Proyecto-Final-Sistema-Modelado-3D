@@ -1,9 +1,11 @@
 """Global HTTP middlewares of the application."""
 
 import logging
+import re
 import time
 
 from fastapi import Request, Response
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger("app.audit")
@@ -70,3 +72,63 @@ class TrailingSlashMiddleware:
                 if raw_path:
                     scope["raw_path"] = raw_path.rstrip(b"/") or b"/"
         await self.app(scope, receive, send)
+
+
+class BodySizeLimitMiddleware:
+    """Answers 413 when the body of a request to a matching path is larger than max_bytes.
+
+    It runs before routing, so an oversized upload is refused before FastAPI parses it (FastAPI parses
+    multipart bodies before running the endpoint's dependencies, authentication included). A declared
+    Content-Length above the limit is refused without reading anything. Without one (chunked transfer
+    encoding) the body is read and counted as it arrives, and the request is refused as soon as it
+    passes the limit; below the limit it is handed to the application unchanged. The whole body is
+    held in memory, so this is only meant for small limits on a few paths.
+    """
+
+    def __init__(self, app, max_bytes, path_pattern):
+        self.app = app
+        self.max_bytes = max_bytes
+        self.path = re.compile(path_pattern)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not self.path.match(scope["path"]):
+            await self.app(scope, receive, send)
+            return
+
+        declared = dict(scope["headers"]).get(b"content-length")
+        if declared is not None and declared.isdigit() and int(declared) > self.max_bytes:
+            await self._too_large(scope, receive, send)
+            return
+
+        chunks, size = [], 0
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return  # the client left; there is nobody to answer
+            body = message.get("body", b"")
+            size += len(body)
+            if size > self.max_bytes:
+                await self._too_large(scope, receive, send)
+                return
+            chunks.append(body)
+            if not message.get("more_body", False):
+                break
+
+        replayed = False
+
+        async def replay():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": b"".join(chunks), "more_body": False}
+            return await receive()
+
+        await self.app(scope, replay, send)
+
+    async def _too_large(self, scope, receive, send):
+        limit_mb = self.max_bytes / (1024 * 1024)
+        response = JSONResponse(
+            status_code=413,
+            content={"detail": f"El cuerpo de la petición supera el máximo de {limit_mb:.2f} MB."},
+        )
+        await response(scope, receive, send)
