@@ -14,10 +14,15 @@ from app.geometry.router import router as geometry_router
 from app.models.space import Base
 from app.routers import auth, chat, rooms
 from app.routers.errors import DATABASE_ERRORS
-from app.routers.spaces import debug_router
+from app.routers.spaces import MAX_PHOTO_REQUEST_BYTES, PHOTO_UPLOAD_PATH, debug_router
 from app.routers.spaces import router as spaces_router
 from app.utils.logging_config import configure_logging
-from app.utils.middlewares import PROCESS_TIME_HEADER, AuditLoggingMiddleware, TrailingSlashMiddleware
+from app.utils.middlewares import (
+    PROCESS_TIME_HEADER,
+    AuditLoggingMiddleware,
+    BodySizeLimitMiddleware,
+    TrailingSlashMiddleware,
+)
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -44,6 +49,9 @@ app = FastAPI(title="Sistema de Modelado 3D", lifespan=lifespan)
 
 # Innermost middleware: routes match with or without a trailing slash, without a 307 redirect.
 app.add_middleware(TrailingSlashMiddleware)
+# Photo uploads are refused before FastAPI parses them (and before authentication) when too large.
+# Inside CORSMiddleware, so the browser can read the 413.
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_PHOTO_REQUEST_BYTES, path_pattern=PHOTO_UPLOAD_PATH)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,

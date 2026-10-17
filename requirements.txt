@@ -8,3 +8,4 @@ scikit-learn
 numpy
 opencv-python-headless
 pydantic-settings
+python-multipart>=0.0.18

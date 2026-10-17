@@ -5,8 +5,10 @@ import httpx
 from app.config import get_settings
 
 SYSTEM_PROMPT = (
-    "Eres un diseñador de interiores. Propón mobiliario para una habitación rectangular. "
+    "Eres un diseñador de interiores. Propón mobiliario para una habitación. "
     "Coordenadas en metros: x en [0, ancho], y hacia arriba en [0, alto], z en [0, profundidad]. "
+    "Si recibes planta, es el polígono del piso como [{x, y}] en metros (su y es el eje z): cada mueble "
+    "debe quedar entero dentro de ese polígono. Sin planta, la habitación es rectangular. "
     "posicion_x y posicion_z son el centro del mueble en planta; posicion_y es la altura de su base "
     "(0 = suelo). Ningún mueble puede salirse de la habitación ni solaparse con otro. "
     "Si recibes contexto_visual (brillo de 0 a 1 y colores dominantes de una foto de la habitación), "
@@ -48,8 +50,12 @@ async def chat_completion(messages, temperature=0.4):
         raise OmniRouteError("unexpected response shape") from exc
 
 
-async def suggest_layout(dims, estilo, instrucciones=None, superficies=(), contexto_visual=None):
-    """Ask the model for a furniture layout. Returns {"descripcion": str, "muebles": [dict, ...]}."""
+async def suggest_layout(dims, estilo, instrucciones=None, superficies=(), contexto_visual=None, planta=None):
+    """Ask the model for a furniture layout. Returns {"descripcion": str, "muebles": [dict, ...]}.
+
+    planta: optional floor polygon [{"x", "y"}, ...] in the same coordinates as dims, for rooms that are
+    not rectangles. Without it the room is the box [0, ancho] x [0, alto] x [0, profundidad].
+    """
     ancho, alto, profundidad = dims
     request = {
         "habitacion": {"ancho": ancho, "alto": alto, "profundidad": profundidad},
@@ -58,6 +64,8 @@ async def suggest_layout(dims, estilo, instrucciones=None, superficies=(), conte
         "superficies_detectadas": [s["tipo"] for s in superficies],
         "contexto_visual": contexto_visual,
     }
+    if planta is not None:
+        request["planta"] = planta
     content = await chat_completion(
         [
             {"role": "system", "content": SYSTEM_PROMPT},

@@ -116,3 +116,28 @@ class LayoutResponse(CamelModel):
     lighting: LightingOut
     ready_to_render: bool
     errors: list[str]
+
+
+class DiscardedItem(CamelModel):
+    name: str
+    reason: str
+
+
+class ColorShareOut(CamelModel):
+    hex: str
+    share: float
+
+
+class VisualContextOut(CamelModel):
+    brightness: float
+    colors: list[ColorShareOut]
+
+
+class AnalyzePhotoResponse(CamelModel):
+    """Result of POST /rooms/{id}/analyze-photo: the room and the AI furniture now placed in it."""
+
+    room: RoomDetail
+    description: str
+    items: list[RoomItem]
+    discarded: list[DiscardedItem]
+    visual_context: VisualContextOut

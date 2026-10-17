@@ -3,7 +3,7 @@ import logging
 import os
 
 import numpy as np
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, UploadFile, status
 from pydantic import ValidationError
 from sqlalchemy import func, make_url, select
 from sqlalchemy.exc import ArgumentError, IntegrityError
@@ -13,11 +13,15 @@ from sqlalchemy.orm import selectinload
 from app.config import Settings, get_settings
 from app.database.connection import get_session
 from app.geometry.collision import check_bounding_box_collision
+from app.geometry.layout import footprint_corner
 from app.geometry.octree import OctreeNode
 from app.geometry.ransac_filter import clean_point_cloud
+from app.geometry.room import Room
 from app.models.space import Categoria, Habitacion, MuebleCatalogo, MuebleSugerido
 from app.routers.auth import ensure_same_user, get_current_user
 from app.routers.errors import DATABASE_ERRORS, database_unavailable
+from app.routers.rooms import load_owned_room, room_detail, room_geometry
+from app.schemas.room import AnalyzePhotoResponse, ColorShareOut, DiscardedItem, RoomItem, VisualContextOut
 from app.schemas.space import (
     AnalyzeRequest,
     AnalyzeResponse,
@@ -33,7 +37,7 @@ from app.schemas.space import (
 )
 from app.services.omniroute import OmniRouteError, suggest_layout
 from app.services.semantic_filter import validate_furniture_coherence
-from app.utils.helpers import ImageDecodeError, load_image_matrix, summarize_image
+from app.utils.helpers import ImageDecodeError, decode_image, load_image_matrix, summarize_image
 
 router = APIRouter(prefix="/api/v1/spaces", tags=["spaces"])
 
@@ -48,6 +52,15 @@ MIN_OBSTACLE_POINTS = 5
 
 # Category the web interface sends when the user types a category of their own.
 OTHERS_CATEGORY = "others"
+
+# Room photos accepted by POST /rooms/{id}/analyze-photo, with the first bytes every file of that
+# format starts with. The declared type alone is just a header the client chose.
+PHOTO_SIGNATURES = {"image/jpeg": b"\xff\xd8\xff", "image/png": b"\x89PNG\r\n\x1a\n"}
+MAX_PHOTO_BYTES = 5 * 1024 * 1024
+# Whole multipart body: the photo plus boundaries, part headers, estilo and instrucciones. app.main
+# enforces it before the body is parsed; the endpoint then checks the photo itself against 5 MB.
+MAX_PHOTO_REQUEST_BYTES = MAX_PHOTO_BYTES + 64 * 1024
+PHOTO_UPLOAD_PATH = r"^/api/v1/spaces/rooms/[^/]+/analyze-photo/?$"
 
 
 def get_layout_suggester():
@@ -72,6 +85,56 @@ def _furniture_box(item):
     box_min = np.array([item.posicion_x - half_w, item.posicion_y, item.posicion_z - half_d])
     box_max = np.array([item.posicion_x + half_w, item.posicion_y + item.alto, item.posicion_z + half_d])
     return box_min, box_max
+
+
+async def _request_proposal(suggester, dims, estilo, instrucciones, superficies, **extra):
+    """Furniture proposal from OmniRoute for a room of dims (ancho, alto, profundidad) in meters.
+
+    extra is passed on to the suggester as keyword arguments (contexto_visual, planta).
+
+    Raises:
+        HTTPException: 502 OmniRoute is not configured, failed or returned an unusable answer.
+    """
+    try:
+        return await suggester(tuple(dims.tolist()), estilo, instrucciones, superficies, **extra)
+    except OmniRouteError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"OmniRoute: {exc}") from exc
+
+
+def _filter_proposal(raw_items, dims, scan=None, floor=None):
+    """Split proposed furniture into the pieces that can be placed and the discarded ones.
+
+    A piece is kept when its data is complete, its box fits in [0, dims] without hitting the pieces
+    kept before it or the scanned objects, and, when floor (an app.geometry.room.Room in the same
+    coordinates) is given, its footprint lies inside that polygon.
+
+    Returns:
+        (accepted, discarded): FurnitureProposal and DiscardedFurniture lists.
+    """
+    accepted, discarded, placed = [], [], []
+    for raw in raw_items:
+        try:
+            item = FurnitureProposal.model_validate(raw)
+        except ValidationError:
+            name = raw.get("nombre") if isinstance(raw, dict) else None
+            discarded.append(
+                DiscardedFurniture(nombre=str(name or "desconocido"), motivo="datos incompletos")
+            )
+            continue
+        box_min, box_max = _furniture_box(item)
+        if check_bounding_box_collision(
+            box_min, box_max, dims, obstacles=placed, scan=scan, min_scan_points=MIN_OBSTACLE_POINTS
+        ):
+            discarded.append(DiscardedFurniture(nombre=item.nombre, motivo="colisión"))
+            continue
+        if floor is not None and not floor.contains_rectangle(
+            box_min[0], box_min[2], item.ancho, item.profundidad
+        ):
+            discarded.append(DiscardedFurniture(nombre=item.nombre, motivo="fuera de la habitación"))
+            continue
+        placed.append((box_min, box_max))
+        accepted.append(item)
+    return accepted, discarded
 
 
 def _category_name(body):
@@ -162,36 +225,12 @@ async def analyze_space(
     scan = OctreeNode.from_points(residual) if len(residual) else None
 
     # 2. Ask OmniRoute for a design proposal.
-    try:
-        proposal = await suggester(
-            tuple(dims.tolist()),
-            body.estilo,
-            body.instrucciones,
-            ransac["planos"],
-            contexto_visual=visual,
-        )
-    except OmniRouteError as exc:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"OmniRoute: {exc}") from exc
+    proposal = await _request_proposal(
+        suggester, dims, body.estilo, body.instrucciones, ransac["planos"], contexto_visual=visual
+    )
 
     # 3. Keep only furniture that fits in the room without hitting walls, objects or other furniture.
-    accepted, discarded, placed = [], [], []
-    for raw in proposal["muebles"]:
-        try:
-            item = FurnitureProposal.model_validate(raw)
-        except ValidationError:
-            name = raw.get("nombre") if isinstance(raw, dict) else None
-            discarded.append(
-                DiscardedFurniture(nombre=str(name or "desconocido"), motivo="datos incompletos")
-            )
-            continue
-        box_min, box_max = _furniture_box(item)
-        if check_bounding_box_collision(
-            box_min, box_max, dims, obstacles=placed, scan=scan, min_scan_points=MIN_OBSTACLE_POINTS
-        ):
-            discarded.append(DiscardedFurniture(nombre=item.nombre, motivo="colisión"))
-            continue
-        placed.append((box_min, box_max))
-        accepted.append(item)
+    accepted, discarded = _filter_proposal(proposal["muebles"], dims, scan=scan)
 
     # 4. Store the room together with its validated layout.
     room = Habitacion(
@@ -227,6 +266,95 @@ async def analyze_space(
         origen=tuple(origin.tolist()),
         ruido=ransac["ruido"],
         contexto_visual=visual,
+    )
+
+
+@router.post("/rooms/{room_id}/analyze-photo", response_model=AnalyzePhotoResponse)
+async def analyze_room_photo(
+    room_id: int = Path(gt=0),
+    file: UploadFile = File(),
+    estilo: str = Form("moderno", min_length=1, max_length=60),
+    instrucciones: str | None = Form(None, max_length=1000),
+    session: AsyncSession = Depends(get_session),
+    suggester=Depends(get_layout_suggester),
+    current_user: str = Depends(get_current_user),
+):
+    """Furnish a saved room from a photo of it (multipart: file, and optional estilo and instrucciones).
+
+    The room's shape comes from the database, never from the client; the photo only feeds the colors
+    and brightness that guide OmniRoute, as in /analyze. Proposed pieces that do not fit inside the
+    room's real polygon, or that overlap each other, are discarded. The accepted ones replace the
+    furniture placed in the room before.
+
+    Returns:
+        200 with the room, the AI description, the placed items (minimum corner of each footprint,
+        meters), the discarded pieces and the photo's visual context.
+
+    Raises:
+        HTTPException: 401 no valid session, 404 no such room for this account, 413 photo larger than
+            5 MB, 415 not a JPEG or PNG (declared type or first bytes), 422 the photo cannot be
+            decoded, 502 OmniRoute failure, 503 database failure. A body far above 5 MB is refused
+            with 413 by BodySizeLimitMiddleware before it is parsed.
+    """
+    row = await load_owned_room(session, room_id, current_user, selectinload(Habitacion.muebles))
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    if content_type not in PHOTO_SIGNATURES:
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Formato no soportado: envía una foto JPEG o PNG."
+        )
+    data = await file.read(MAX_PHOTO_BYTES + 1)
+    if len(data) > MAX_PHOTO_BYTES:
+        raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "La foto supera el máximo de 5 MB.")
+    if not data.startswith(PHOTO_SIGNATURES[content_type]):
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            f"El archivo no es una foto {content_type.split('/')[1].upper()} aunque se declaró así.",
+        )
+    try:
+        matrix = await asyncio.to_thread(decode_image, data)
+    except ImageDecodeError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Imagen inválida: {exc}") from exc
+    visual = await asyncio.to_thread(summarize_image, matrix)
+
+    # The AI and the collision check work in [0, ancho] x [0, profundidad]; the stored polygon may
+    # start anywhere, so it is shifted to its bounding box's corner and the results are shifted back.
+    geometry = room_geometry(row)
+    box = geometry.bounding_box()
+    floor = Room([(v.x - box.min_x, v.y - box.min_y) for v in geometry.vertices], geometry.height_m)
+    dims = np.array([box.max_x - box.min_x, geometry.height_m, box.max_y - box.min_y], dtype=float)
+    extra = {"contexto_visual": visual}
+    if row.vertices is not None:
+        extra["planta"] = floor.vertices_json()
+    proposal = await _request_proposal(suggester, dims, estilo, instrucciones, [], **extra)
+    accepted, discarded = _filter_proposal(proposal["muebles"], dims, floor=floor)
+
+    pieces = []
+    for item in accepted:
+        values = item.model_dump()
+        values["posicion_x"] += box.min_x
+        values["posicion_z"] += box.min_y
+        pieces.append(MuebleSugerido(**values))
+    # delete-orphan cascade: the previous furniture of the room is deleted in the same commit.
+    row.muebles = pieces
+    try:
+        await session.commit()
+    except DATABASE_ERRORS as exc:
+        await session.rollback()
+        raise database_unavailable() from exc
+
+    items = []
+    for piece in pieces:
+        x, y = footprint_corner(piece.posicion_x, piece.posicion_z, piece.ancho, piece.profundidad)
+        items.append(RoomItem(id=piece.id, name=piece.nombre, x=x, y=y, rotation=0))
+    return AnalyzePhotoResponse(
+        room=room_detail(row),
+        description=proposal.get("descripcion", ""),
+        items=items,
+        discarded=[DiscardedItem(name=d.nombre, reason=d.motivo) for d in discarded],
+        visual_context=VisualContextOut(
+            brightness=visual["brillo"],
+            colors=[ColorShareOut(hex=c["hex"], share=c["proporcion"]) for c in visual["colores"]],
+        ),
     )
 
 
