@@ -3,13 +3,11 @@
 services:
   - type: web
     name: proyecto3d-backend
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: ./start.sh
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     healthCheckPath: /
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.8"
       - key: DATABASE_URL
         sync: false # Supabase connection string
       - key: JWT_SECRET
