@@ -36,3 +36,14 @@ async def add_missing_user_columns(conn):
     for table in USER_SCOPED_TABLES:
         await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS user_id VARCHAR(64)"))
         await conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table}_user_id ON {table} (user_id)"))
+
+
+async def add_missing_room_columns(conn):
+    """Add habitaciones.vertices (floor polygon) to databases created before it existed.
+
+    Same approach as add_missing_user_columns: a no-op when the column is already there.
+    PostgreSQL only: tests use a fresh SQLite, where create_all already includes it.
+    """
+    if conn.dialect.name != "postgresql":
+        return
+    await conn.execute(text("ALTER TABLE habitaciones ADD COLUMN IF NOT EXISTS vertices JSONB"))
