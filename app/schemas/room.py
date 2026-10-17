@@ -10,6 +10,7 @@ from pydantic.alias_generators import to_camel
 MAX_COORDINATE_M = 1000
 MAX_VERTICES = 200
 MAX_HEIGHT_M = 20
+MAX_LAYOUT_ITEMS = 200
 
 
 class CamelModel(BaseModel):
@@ -45,3 +46,73 @@ class RoomDetail(CamelModel):
     vertices: list[Vertex]
     height_m: float
     area_m2: float
+
+
+class RoomItem(CamelModel):
+    """A piece placed in the room. x/y are the MINIMUM corner of its footprint, in meters."""
+
+    id: int
+    name: str
+    x: float
+    y: float
+    rotation: float
+
+
+class RoomItemsOut(CamelModel):
+    items: list[RoomItem]
+
+
+class LayoutConstraints(CamelModel):
+    min_distance_between_items_cm: float = Field(gt=0, le=500, allow_inf_nan=False)
+    # Accepted for compatibility with the old contract but not used yet: no doors are stored.
+    min_clear_path_cm: float = Field(gt=0, le=1000, allow_inf_nan=False)
+
+
+class LayoutRequest(CamelModel):
+    constraints: LayoutConstraints
+    # Catalog items to place; all of the account's catalog when omitted.
+    item_ids: list[int] | None = Field(None, min_length=1, max_length=MAX_LAYOUT_ITEMS)
+
+
+class ItemPositionOut(CamelModel):
+    item_id: int
+    x: float
+    y: float
+    rotation: float
+
+
+class LayoutOut(CamelModel):
+    positions: list[ItemPositionOut]
+    warnings: list[str]
+
+
+class CollisionOut(CamelModel):
+    item_a: int
+    item_b: int
+    overlap_cm: float
+
+
+class ValidationOut(CamelModel):
+    valid: bool
+    collisions: list[CollisionOut]
+
+
+class Vector3(CamelModel):
+    x: float
+    y: float
+    z: float
+
+
+class LightingOut(CamelModel):
+    position: Vector3
+    intensity: float
+    color: str
+    source: str
+
+
+class LayoutResponse(CamelModel):
+    layout: LayoutOut
+    validation: ValidationOut
+    lighting: LightingOut
+    ready_to_render: bool
+    errors: list[str]
