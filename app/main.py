@@ -12,7 +12,7 @@ from app.config import get_settings
 from app.database.connection import add_missing_room_columns, add_missing_user_columns, engine
 from app.geometry.router import router as geometry_router
 from app.models.space import Base
-from app.routers import auth, rooms
+from app.routers import auth, chat, rooms
 from app.routers.errors import DATABASE_ERRORS
 from app.routers.spaces import debug_router
 from app.routers.spaces import router as spaces_router
@@ -106,6 +106,7 @@ app.include_router(auth.router, prefix="/api/v1/auth")
 app.include_router(geometry_router)
 app.include_router(spaces_router)
 app.include_router(rooms.router)
+app.include_router(chat.router)
 if get_settings().enable_debug_routes:
     app.include_router(debug_router)
 
