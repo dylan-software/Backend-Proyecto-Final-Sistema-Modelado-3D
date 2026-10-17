@@ -3,6 +3,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
@@ -57,6 +58,20 @@ app.add_middleware(
 )
 # Added last, so it is the outermost middleware and its timing covers CORS and the endpoint itself.
 app.add_middleware(AuditLoggingMiddleware)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """422 for an invalid request, listing only the type, location and message of each error.
+
+    FastAPI's default handler echoes each error's "input" (and "ctx") back to the client. When the body
+    is not valid UTF-8 and not JSON, that input is raw bytes, encoding it raises UnicodeDecodeError and
+    the client gets a 500 instead of a 422. Leaving both fields out also avoids reflecting the request.
+    """
+    errors = [
+        {"type": error["type"], "loc": list(error["loc"]), "msg": error["msg"]} for error in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": errors})
 
 
 @app.exception_handler(Exception)
