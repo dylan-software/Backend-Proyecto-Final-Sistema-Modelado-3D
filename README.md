@@ -27,15 +27,19 @@ servidor sigue atendiendo otras peticiones mientras calcula.
 
 ```
 app/
-├── main.py                 instancia FastAPI, CORS, middleware de auditoría, manejador de errores 500
+├── main.py                 instancia FastAPI, CORS, middleware de auditoría, manejadores de errores 422 y 500
 ├── config.py               configuración centralizada (pydantic-settings)
 ├── database/connection.py  motor y fábrica de sesiones asíncronas
 ├── models/space.py         tablas habitaciones y muebles_sugeridos
-├── schemas/space.py        esquemas Pydantic de entrada y salida
-├── geometry/               octree, colisiones, filtro RANSAC y endpoints /geometry
+├── schemas/space.py        esquemas Pydantic de /analyze, /catalog y /spaces (snake_case)
+├── schemas/room.py, chat.py esquemas de salas, layout y chat (JSON en camelCase)
+├── geometry/               octree, colisiones, RANSAC, sala poligonal (room.py), layout y endpoints /geometry
 ├── services/omniroute.py   cliente de OmniRoute
+├── services/scene_assistant.py  contexto y prompt del chat sobre una sala
 ├── utils/                  tipos compartidos, ayudas de imagen, logs (logging_config) y middlewares
-├── routers/spaces.py       pipeline POST /api/v1/spaces/analyze
+├── routers/spaces.py       POST /analyze, catálogo, listado y POST /rooms/{id}/analyze-photo
+├── routers/rooms.py        salas poligonales editables, sus muebles y el layout
+├── routers/chat.py         POST /api/v1/chat
 └── tests/                  pruebas unitarias y de integración
 ```
 
@@ -68,7 +72,7 @@ de esta carpeta.
 | `ALLOWED_ORIGINS` | Orígenes permitidos por CORS, separados por comas (por defecto `http://localhost:3000`). |
 | `ENABLE_DEBUG_ROUTES` | `true` registra `GET /api/v1/spaces/debug-vars`. Apagado por defecto; no definirla en producción. |
 
-Autenticación: todos los endpoints con datos de usuario (`/api/v1/spaces/*` y `/geometry/*`) exigen
+Autenticación: todos los endpoints con datos de usuario (`/api/v1/spaces/*`, `/api/v1/chat` y `/geometry/*`) exigen
 `Authorization: Bearer <access_token>` de `POST /api/v1/auth/login`; sin token o con uno inválido o
 caducado responden 401. La cuenta es siempre la del `sub` del token. El `user_id` que aún envía el
 frontend es opcional: si no coincide con el token, la respuesta es 403. Los recursos de otra cuenta
@@ -80,6 +84,15 @@ responden 404, igual que los inexistentes. `/`, `/api/v1/health` y `/api/v1/auth
 |---|---|---|
 | GET | `/` | Estado del servidor. |
 | POST | `/api/v1/spaces/analyze` | Pipeline completo: RANSAC → OmniRoute → colisiones → PostgreSQL. |
+| POST | `/api/v1/spaces/rooms` | Crea una sala poligonal: `{name, vertices: [{x, y}], heightM}` → 201 `{id, name, vertices, heightM, areaM2}`. |
+| GET | `/api/v1/spaces/rooms/{id}` | La sala; las creadas por `/analyze` vuelven como su rectángulo. |
+| PATCH | `/api/v1/spaces/rooms/{id}/vertices/{index}` | Mueve un vértice: `{x, y}`. 422 si el polígono queda inválido (la sala no cambia). |
+| POST | `/api/v1/spaces/rooms/{id}/vertices` | Inserta un vértice: `{afterIndex, x, y}`. |
+| DELETE | `/api/v1/spaces/rooms/{id}/vertices/{index}` | Elimina un vértice; una sala conserva al menos 3. |
+| GET | `/api/v1/spaces/rooms/{id}/items` | Muebles colocados: `{items: [{id, name, x, y, rotation}]}`. |
+| POST | `/api/v1/spaces/rooms/{id}/layout` | Distribuye el catálogo dentro del polígono real (sin IA) y guarda el resultado. |
+| POST | `/api/v1/spaces/rooms/{id}/analyze-photo` | Multipart (`file`, `estilo`, `instrucciones`): amuebla la sala guardada con OmniRoute guiado por la foto. |
+| POST | `/api/v1/chat` | Chat sobre una sala: `{roomId, messages}` → `{role: "assistant", content}`. |
 | POST | `/geometry/point-cloud` | Solo el filtro RANSAC sobre una nube de puntos. |
 | POST | `/geometry/collision` | Solo la validación de colisiones de una caja. |
 
@@ -98,6 +111,37 @@ Convención de coordenadas: metros, eje **y hacia arriba**. La habitación ocupa
 `[0, ancho] × [0, alto] × [0, profundidad]`; el origen es la esquina mínima de las superficies
 detectadas. En cada mueble, `posicion_x`/`posicion_z` son el centro de su base y `posicion_y` la
 altura de esa base.
+
+## Salas poligonales, layout, chat y foto
+
+Contrato JSON en camelCase (`heightM`, `areaM2`, `afterIndex`); también se aceptan las claves en
+snake_case. Todo en metros salvo el catálogo, que está en centímetros: la conversión se hace en un solo
+lugar, `app/geometry/units.py`.
+
+- **Salas.** Un polígono de al menos 3 vértices, sin autointersecciones y con área de al menos
+  0.01 m². La `y` de cada vértice es el eje z en 3D. Cada edición revalida la forma; si queda inválida,
+  la respuesta es 422 y la sala no cambia. `GET /api/v1/spaces` sigue sin incluir `vertices`: se leen
+  con `GET /rooms/{id}`.
+- **Posición de un mueble.** La API usa la **esquina mínima** de su huella (`x`, `y`); la base de datos
+  guarda el **centro** (`posicion_x`, `posicion_z`). Las conversiones están en `app/geometry/layout.py`.
+- **Layout.** `POST /rooms/{id}/layout` con `{constraints: {minDistanceBetweenItemsCm, minClearPathCm},
+  itemIds?}`. Lee la sala y el catálogo de la cuenta desde la base (nunca la geometría del cliente),
+  empaqueta los muebles en filas dentro del polígono real (desplazándolos de 10 en 10 cm si no caben) y
+  valida colisiones entre cajas: el solape es el **menor** de los solapes por eje, con 2 cm de
+  tolerancia. Responde `{layout: {positions, warnings}, validation, lighting, readyToRender, errors}`.
+  Si `readyToRender` es true, las posiciones reemplazan los muebles anteriores de la sala.
+  `minClearPathCm` se acepta pero no se usa: todavía no se guardan puertas.
+- **Chat.** El servidor arma el contexto (vértices, altura, área y muebles) tras verificar el dueño y lo
+  pone en el system prompt entre delimitadores, como datos no confiables. El asistente no recibe
+  imágenes. Sin bucle de tool-calling, así funciona con cualquier modelo de OmniRoute. Máximo 20
+  mensajes de 2000 caracteres; los errores de OmniRoute responden 502.
+- **Foto.** `POST /rooms/{id}/analyze-photo` acepta solo `image/jpeg` e `image/png`, y los primeros bytes
+  del archivo deben coincidir con el tipo declarado (415 si no), de hasta 5 MB (413 si no); una imagen
+  que no se puede decodificar responde 422. FastAPI parsea el multipart antes de autenticar, así que
+  `BodySizeLimitMiddleware` rechaza con 413 un cuerpo de más de 5 MB + 64 KB antes de parsearlo, haya
+  `Content-Length` o venga en chunks. Reutiliza el filtro de
+  `/analyze` y descarta además los muebles que se salen del polígono real. Los aceptados reemplazan los
+  muebles anteriores de la sala.
 
 ## Telemetría y auditoría
 
