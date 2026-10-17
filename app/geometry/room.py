@@ -87,6 +87,33 @@ def _segments_touch(a, b, c, d):
     )
 
 
+def _segment_crosses_open_rectangle(a, b, min_x, min_y, max_x, max_y):
+    """Whether segment ab passes through the interior of the rectangle (its boundary does not count).
+
+    Liang-Barsky clipping keeps the part of the segment inside the closed rectangle. That part lies
+    either on one side of the rectangle (touching only) or, except for its endpoints, in the interior,
+    so testing its midpoint is enough.
+    """
+    dx, dy = b.x - a.x, b.y - a.y
+    t0, t1 = 0.0, 1.0
+    for p, q in ((-dx, a.x - min_x), (dx, max_x - a.x), (-dy, a.y - min_y), (dy, max_y - a.y)):
+        if p == 0:
+            if q < 0:
+                return False  # parallel to this side and outside it
+            continue
+        t = q / p
+        if p < 0:
+            t0 = max(t0, t)
+        else:
+            t1 = min(t1, t)
+        if t0 > t1:
+            return False
+    mid_x = a.x + dx * (t0 + t1) / 2
+    mid_y = a.y + dy * (t0 + t1) / 2
+    eps = 1e-12
+    return min_x + eps < mid_x < max_x - eps and min_y + eps < mid_y < max_y - eps
+
+
 def _without_repeated_vertices(vertices):
     """Drop consecutive duplicates (including last == first): they form zero-length edges only."""
     ring = []
@@ -207,13 +234,21 @@ class Room:
         return inside
 
     def contains_rectangle(self, x, y, width, depth):
-        """Whether the four corners of the rectangle fall inside the polygon (good enough for furniture)."""
-        return (
-            self.contains_point(x, y)
-            and self.contains_point(x + width, y)
-            and self.contains_point(x, y + depth)
-            and self.contains_point(x + width, y + depth)
-        )
+        """Whether the axis-aligned rectangle [x, x + width] x [y, y + depth] lies inside the polygon.
+
+        The four corners being inside is not enough in a concave room: a long rectangle can have all
+        its corners in the floor and still cross a notch between them. If no wall passes through the
+        rectangle's interior, that interior is either entirely inside the room or entirely outside, so
+        its center decides. Walls along its edges (a piece pushed against a wall) do not count, and
+        unlike a corner test, the center is never on a wall, where ray casting is ambiguous.
+        """
+        v = self._vertices
+        if any(
+            _segment_crosses_open_rectangle(v[i], v[(i + 1) % len(v)], x, y, x + width, y + depth)
+            for i in range(len(v))
+        ):
+            return False
+        return self.contains_point(x + width / 2, y + depth / 2)
 
     # --- Mutations: the user can edit the room surface after the scan ---------------------------
 
