@@ -62,6 +62,17 @@ de esta carpeta.
 | `OMNIROUTE_API_KEY` | Clave de OmniRoute. |
 | `OMNIROUTE_MODEL` | Modelo o combo configurado en OmniRoute. |
 | `OMNIROUTE_TIMEOUT` | Segundos de espera por respuesta (60 por defecto). |
+| `JWT_SECRET` | Clave HS256 de los tokens de sesión. Obligatoria con `ENVIRONMENT=production` (el servidor no arranca sin ella); en desarrollo, si falta, se genera una aleatoria en cada arranque. Cambiarla cierra todas las sesiones. |
+| `JWT_EXPIRE_MINUTES` | Vida del token en minutos (60 por defecto). |
+| `ENVIRONMENT` | `production` en Render; cualquier otro valor se trata como desarrollo. |
+| `ALLOWED_ORIGINS` | Orígenes permitidos por CORS, separados por comas (por defecto `http://localhost:3000`). |
+| `ENABLE_DEBUG_ROUTES` | `true` registra `GET /api/v1/spaces/debug-vars`. Apagado por defecto; no definirla en producción. |
+
+Autenticación: todos los endpoints con datos de usuario (`/api/v1/spaces/*` y `/geometry/*`) exigen
+`Authorization: Bearer <access_token>` de `POST /api/v1/auth/login`; sin token o con uno inválido o
+caducado responden 401. La cuenta es siempre la del `sub` del token. El `user_id` que aún envía el
+frontend es opcional: si no coincide con el token, la respuesta es 403. Los recursos de otra cuenta
+responden 404, igual que los inexistentes. `/`, `/api/v1/health` y `/api/v1/auth/*` son públicos.
 
 ## Endpoints
 

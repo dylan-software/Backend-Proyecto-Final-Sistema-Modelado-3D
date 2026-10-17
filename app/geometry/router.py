@@ -1,11 +1,13 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from app.geometry.collision import check_bounding_box_collision
 from app.geometry.octree import OctreeNode
 from app.geometry.ransac_filter import clean_point_cloud
+from app.routers.auth import get_current_user
 
-router = APIRouter(prefix="/geometry", tags=["geometry"])
+# Stateless computations, but still limited to logged-in accounts.
+router = APIRouter(prefix="/geometry", tags=["geometry"], dependencies=[Depends(get_current_user)])
 
 Point = tuple[float, float, float]
 

@@ -1,16 +1,12 @@
 import base64
 
 import cv2
-import httpx
 import numpy as np
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
-from app.database.connection import get_session
 from app.main import app
-from app.models.space import Base, Categoria, Habitacion, MuebleCatalogo, MuebleSugerido
+from app.models.space import Categoria, Habitacion, MuebleCatalogo, MuebleSugerido
 from app.routers.spaces import get_coherence_validator, get_layout_suggester
 from app.services import semantic_filter
 from app.services.omniroute import OmniRouteError
@@ -18,40 +14,10 @@ from app.services.omniroute import OmniRouteError
 pytestmark = pytest.mark.anyio
 
 
-@pytest.fixture
-def anyio_backend():
-    return "asyncio"
-
-
-@pytest.fixture
-async def client():
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
-        yield http
-
-
 async def test_health(client):
     response = await client.get("/")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
-
-
-@pytest.fixture
-async def db_sessions():
-    """In-memory SQLite database standing in for PostgreSQL."""
-    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
-
-    async def override_session():
-        async with sessions() as session:
-            yield session
-
-    app.dependency_overrides[get_session] = override_session
-    yield sessions
-    app.dependency_overrides.pop(get_session, None)
-    await engine.dispose()
 
 
 def room_scan():
@@ -124,10 +90,10 @@ async def fake_suggester(dims, estilo, instrucciones, superficies, contexto_visu
     }
 
 
-async def test_analyze_full_flow(client, db_sessions):
+async def test_analyze_full_flow(user_a, db_sessions):
     app.dependency_overrides[get_layout_suggester] = lambda: fake_suggester
     try:
-        response = await client.post(
+        response = await user_a.post(
             "/api/v1/spaces/analyze",
             json={"nombre": "Sala", "estilo": "nordico", "puntos": room_scan().tolist()},
         )
@@ -160,7 +126,7 @@ async def test_analyze_full_flow(client, db_sessions):
     assert [(m.nombre, m.habitacion_id) for m in saved_furniture] == [("mesa", room["id"])]
 
 
-async def test_analyze_reports_omniroute_failure(client, db_sessions):
+async def test_analyze_reports_omniroute_failure(user_a, db_sessions):
     from app.services.omniroute import OmniRouteError
 
     async def failing_suggester(*args, **kwargs):
@@ -168,7 +134,7 @@ async def test_analyze_reports_omniroute_failure(client, db_sessions):
 
     app.dependency_overrides[get_layout_suggester] = lambda: failing_suggester
     try:
-        response = await client.post(
+        response = await user_a.post(
             "/api/v1/spaces/analyze",
             json={"nombre": "Sala", "puntos": room_scan().tolist()},
         )
@@ -189,7 +155,7 @@ def encoded_photo(bgr, width=64, height=48):
     return "data:image/png;base64," + base64.b64encode(png.tobytes()).decode()
 
 
-async def test_analyze_reads_room_photo(client, db_sessions):
+async def test_analyze_reads_room_photo(user_a, db_sessions):
     received = {}
 
     async def capturing_suggester(dims, estilo, instrucciones, superficies, contexto_visual=None):
@@ -198,7 +164,7 @@ async def test_analyze_reads_room_photo(client, db_sessions):
 
     app.dependency_overrides[get_layout_suggester] = lambda: capturing_suggester
     try:
-        response = await client.post(
+        response = await user_a.post(
             "/api/v1/spaces/analyze",
             json={"nombre": "Sala", "puntos": room_scan().tolist(), "imagen": encoded_photo((0, 0, 200))},
         )
@@ -212,10 +178,10 @@ async def test_analyze_reads_room_photo(client, db_sessions):
     assert received["contexto_visual"] == visual
 
 
-async def test_analyze_rejects_invalid_photo(client, db_sessions):
+async def test_analyze_rejects_invalid_photo(user_a, db_sessions):
     app.dependency_overrides[get_layout_suggester] = lambda: fake_suggester
     try:
-        response = await client.post(
+        response = await user_a.post(
             "/api/v1/spaces/analyze",
             json={"nombre": "Sala", "puntos": room_scan().tolist(), "imagen": "esto no es una imagen"},
         )
@@ -254,8 +220,8 @@ def catalog_item(nombre, categoria="Sillas", custom_category=None):
     }
 
 
-async def test_catalog_accepts_coherent_furniture(client, db_sessions, fake_validator):
-    response = await client.post("/api/v1/spaces/catalog", json=catalog_item("Silla"))
+async def test_catalog_accepts_coherent_furniture(user_a, db_sessions, fake_validator):
+    response = await user_a.post("/api/v1/spaces/catalog", json=catalog_item("Silla"))
 
     assert response.status_code == 201, response.text
     body = response.json()
@@ -266,8 +232,8 @@ async def test_catalog_accepts_coherent_furniture(client, db_sessions, fake_vali
     assert [(m.nombre, m.categoria_id) for m in saved] == [("Silla", body["categoria_id"])]
 
 
-async def test_catalog_rejects_incoherent_furniture(client, db_sessions, fake_validator):
-    response = await client.post(
+async def test_catalog_rejects_incoherent_furniture(user_a, db_sessions, fake_validator):
+    response = await user_a.post(
         "/api/v1/spaces/catalog", json=catalog_item("Algoritmo", "Others", custom_category="Ideas")
     )
 
@@ -279,11 +245,11 @@ async def test_catalog_rejects_incoherent_furniture(client, db_sessions, fake_va
         assert (await session.scalars(select(Categoria))).all() == []
 
 
-async def test_catalog_creates_custom_category_once(client, db_sessions, fake_validator):
-    first = await client.post(
+async def test_catalog_creates_custom_category_once(user_a, db_sessions, fake_validator):
+    first = await user_a.post(
         "/api/v1/spaces/catalog", json=catalog_item("Puff", "Others", custom_category="Asientos bajos")
     )
-    second = await client.post(
+    second = await user_a.post(
         "/api/v1/spaces/catalog", json=catalog_item("Silla", "others", custom_category="  asientos   BAJOS ")
     )
 
@@ -295,20 +261,20 @@ async def test_catalog_creates_custom_category_once(client, db_sessions, fake_va
         assert [c.nombre for c in (await session.scalars(select(Categoria))).all()] == ["Asientos bajos"]
 
 
-async def test_catalog_requires_custom_category_for_others(client, db_sessions, fake_validator):
-    response = await client.post("/api/v1/spaces/catalog", json=catalog_item("Puff", "Others"))
+async def test_catalog_requires_custom_category_for_others(user_a, db_sessions, fake_validator):
+    response = await user_a.post("/api/v1/spaces/catalog", json=catalog_item("Puff", "Others"))
 
     assert response.status_code == 422
     assert "custom_category" in response.json()["detail"]
 
 
-async def test_catalog_reports_filter_failure(client, db_sessions):
+async def test_catalog_reports_filter_failure(user_a, db_sessions):
     async def failing_validator(nombre):
         raise OmniRouteError("request failed: timeout")
 
     app.dependency_overrides[get_coherence_validator] = lambda: failing_validator
     try:
-        response = await client.post("/api/v1/spaces/catalog", json=catalog_item("Silla"))
+        response = await user_a.post("/api/v1/spaces/catalog", json=catalog_item("Silla"))
     finally:
         app.dependency_overrides.pop(get_coherence_validator, None)
 
@@ -354,11 +320,11 @@ async def test_validate_furniture_coherence_sends_strict_prompt(monkeypatch):
     assert await semantic_filter.validate_furniture_coherence("Algoritmo") is False
 
 
-async def test_delete_catalog_furniture(client, db_sessions, fake_validator):
-    kept = (await client.post("/api/v1/spaces/catalog", json=catalog_item("Silla"))).json()
-    removed = (await client.post("/api/v1/spaces/catalog", json=catalog_item("Puff"))).json()
+async def test_delete_catalog_furniture(user_a, db_sessions, fake_validator):
+    kept = (await user_a.post("/api/v1/spaces/catalog", json=catalog_item("Silla"))).json()
+    removed = (await user_a.post("/api/v1/spaces/catalog", json=catalog_item("Puff"))).json()
 
-    response = await client.delete(f"/api/v1/spaces/furniture/{removed['id']}")
+    response = await user_a.delete(f"/api/v1/spaces/furniture/{removed['id']}")
 
     assert response.status_code == 200, response.text
     assert response.json() == {"success": True, "message": "Furniture item successfully removed"}
@@ -368,60 +334,77 @@ async def test_delete_catalog_furniture(client, db_sessions, fake_validator):
         assert [c.nombre for c in (await session.scalars(select(Categoria))).all()] == ["Sillas"]
 
 
-async def test_delete_catalog_furniture_not_found(client, db_sessions):
-    response = await client.delete("/api/v1/spaces/furniture/999")
+async def test_delete_catalog_furniture_not_found(user_a, db_sessions):
+    response = await user_a.delete("/api/v1/spaces/furniture/999")
 
     assert response.status_code == 404
     assert "999" in response.json()["detail"]
 
 
-async def test_spaces_are_isolated_per_account(client, db_sessions, fake_validator):
+async def test_spaces_are_isolated_per_account(user_a, user_b, db_sessions, fake_validator):
     app.dependency_overrides[get_layout_suggester] = lambda: fake_suggester
     try:
-        for user_id, nombre in (("user-a", "Sala A"), ("user-b", "Sala B")):
-            response = await client.post(
-                "/api/v1/spaces/analyze",
-                json={"nombre": nombre, "user_id": user_id, "puntos": room_scan().tolist()},
+        for http, nombre in ((user_a, "Sala A"), (user_b, "Sala B")):
+            response = await http.post(
+                "/api/v1/spaces/analyze", json={"nombre": nombre, "puntos": room_scan().tolist()}
             )
             assert response.status_code == 201, response.text
     finally:
         app.dependency_overrides.pop(get_layout_suggester, None)
-    await client.post("/api/v1/spaces/catalog", json={**catalog_item("Silla"), "user_id": "user-a"})
-    await client.post("/api/v1/spaces/catalog", json={**catalog_item("Puff"), "user_id": "user-b"})
+    # user_id is still accepted when it matches the session, for older frontends.
+    await user_a.post("/api/v1/spaces/catalog", json={**catalog_item("Silla"), "user_id": "user-a"})
+    await user_b.post("/api/v1/spaces/catalog", json=catalog_item("Puff"))
 
-    user_a = (await client.get("/api/v1/spaces", params={"user_id": "user-a"})).json()
-    user_b = (await client.get("/api/v1/spaces", params={"user_id": "user-b"})).json()
-    stranger = (await client.get("/api/v1/spaces", params={"user_id": "user-c"})).json()
+    spaces_a = (await user_a.get("/api/v1/spaces")).json()
+    spaces_b = (await user_b.get("/api/v1/spaces", params={"user_id": "user-b"})).json()
 
-    assert [r["nombre"] for r in user_a["habitaciones"]] == ["Sala A"]
-    assert [m["nombre"] for m in user_a["habitaciones"][0]["muebles"]] == ["mesa"]
-    assert [m["nombre"] for m in user_a["catalogo"]] == ["Silla"]
-    assert [r["nombre"] for r in user_b["habitaciones"]] == ["Sala B"]
-    assert [m["nombre"] for m in user_b["catalogo"]] == ["Puff"]
-    assert stranger["habitaciones"] == stranger["catalogo"] == []
-
-
-async def test_spaces_require_user_id(client, db_sessions):
-    response = await client.get("/api/v1/spaces")
-
-    assert response.status_code == 422
+    assert spaces_a["user_id"] == "user-a"
+    assert [r["nombre"] for r in spaces_a["habitaciones"]] == ["Sala A"]
+    assert [m["nombre"] for m in spaces_a["habitaciones"][0]["muebles"]] == ["mesa"]
+    assert [m["nombre"] for m in spaces_a["catalogo"]] == ["Silla"]
+    assert [r["nombre"] for r in spaces_b["habitaciones"]] == ["Sala B"]
+    assert [m["nombre"] for m in spaces_b["catalogo"]] == ["Puff"]
 
 
-async def test_trailing_slash_is_served_without_redirect(client, db_sessions):
-    response = await client.get("/api/v1/spaces/", params={"user_id": "user-a"})
+async def test_spaces_user_id_is_optional(user_a, db_sessions):
+    response = await user_a.get("/api/v1/spaces")
 
     assert response.status_code == 200, response.text
     assert response.json() == {"user_id": "user-a", "habitaciones": [], "catalogo": []}
 
 
-async def test_cors_preflight_allows_delete_with_credentials(client):
+async def test_trailing_slash_is_served_without_redirect(user_a, db_sessions):
+    response = await user_a.get("/api/v1/spaces/", params={"user_id": "user-a"})
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"user_id": "user-a", "habitaciones": [], "catalogo": []}
+
+
+async def test_cors_preflight_allows_delete_from_allowed_origin(client):
     origin = "https://proyecto-3d.vercel.app"
     response = await client.options(
         "/api/v1/spaces/furniture/1",
-        headers={"Origin": origin, "Access-Control-Request-Method": "DELETE"},
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "DELETE",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
     )
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == origin
-    assert response.headers["access-control-allow-credentials"] == "true"
+    # Bearer tokens, not cookies: credentials are not allowed.
+    assert "access-control-allow-credentials" not in response.headers
     assert "DELETE" in response.headers["access-control-allow-methods"]
+    allowed_headers = response.headers["access-control-allow-headers"].lower()
+    assert "authorization" in allowed_headers and "content-type" in allowed_headers
+
+
+async def test_cors_preflight_rejects_other_origins(client):
+    response = await client.options(
+        "/api/v1/spaces",
+        headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "GET"},
+    )
+
+    assert response.status_code == 400
+    assert "access-control-allow-origin" not in response.headers
