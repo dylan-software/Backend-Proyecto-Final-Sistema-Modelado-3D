@@ -5,6 +5,7 @@ services:
     name: proyecto3d-backend
     runtime: python
     buildCommand: pip install -r requirements.txt
+    startCommand: ./start.sh
     healthCheckPath: /
     envVars:
       - key: PYTHON_VERSION
