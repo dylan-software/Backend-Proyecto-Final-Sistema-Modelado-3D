@@ -19,10 +19,10 @@ SHIFT_STEP_M = 0.1
 MAX_STEPS_PER_AXIS = 100
 
 # Search budget in work units (one per room vertex and placed piece checked against a candidate), so
-# the worst room the API accepts stays around a second: per layout, and per piece so that one piece
+# the worst room the API accepts stays well under a second: per layout, and per piece so that one piece
 # that never fits cannot use up the whole layout's budget.
-MAX_LAYOUT_WORK = 1_000_000
-MAX_PIECE_WORK = 250_000
+MAX_LAYOUT_WORK = 500_000
+MAX_PIECE_WORK = 125_000
 
 # Floating-point slack in meters for comparisons of sums such as x + width + gap.
 EPSILON = 1e-9
