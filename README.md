@@ -131,7 +131,13 @@ lugar, `app/geometry/units.py`.
   distancia mínima con todo lo ya colocado) y valida colisiones entre cajas: el solape es el **menor**
   de los solapes por eje, con 2 cm de tolerancia. `minDistanceBetweenItemsCm` se aplica entre muebles y
   al borde de la caja delimitadora de la sala, no a las paredes interiores: un mueble puede quedar
-  pegado a la pared de una muesca. Responde `{layout: {positions, warnings}, validation, lighting, readyToRender, errors}`.
+  pegado a la pared de una muesca. La búsqueda está acotada para que la sala más grande que acepta la
+  API (±1000 m, 200 vértices, 200 muebles) responda en torno a medio segundo: en salas de más de 10 m
+  de lado el paso crece hasta dar como mucho 100 posiciones por eje, y hay un tope de trabajo por
+  mueble y por petición. Un mueble que agota su tope sale con la advertencia "Se detuvo la búsqueda
+  de un hueco…"; al agotarse el de la petición, una sola advertencia lista los muebles que no se
+  colocaron. Corre en un hilo aparte para no bloquear el servidor. Responde
+  `{layout: {positions, warnings}, validation, lighting, readyToRender, errors}`.
   Si `readyToRender` es true, las posiciones reemplazan los muebles anteriores de la sala.
   `minClearPathCm` se acepta pero no se usa: todavía no se guardan puertas.
 - **Chat.** El servidor arma el contexto (vértices, altura, área y muebles) tras verificar el dueño y lo

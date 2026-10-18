@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from app.geometry.layout import (
@@ -7,6 +9,7 @@ from app.geometry.layout import (
     footprint_center,
     footprint_corner,
     generate_layout,
+    grid_step,
     run_layout,
     validate_layout,
 )
@@ -180,6 +183,97 @@ def test_pieces_placed_in_gaps_never_overlap_and_keep_their_distance():
     assert_inside(room, items, result.positions)
     assert_outside_the_notch(items, result.positions)
     assert_apart(items, result.positions, 15)
+
+
+# --- Search budget ---------------------------------------------------------------------------------
+
+
+def comb_room(low, high, vertex_count=198):
+    """A base strip along y = low with thin teeth up to high; returns the room and its tooth width.
+
+    A square 1.5 teeth wide fits in the bounding box but nowhere in the room: wider than a tooth and
+    deeper than the strip (half a tooth). It forces the search through every candidate.
+    """
+    teeth = (vertex_count - 2) // 4
+    tooth = (high - low) / (2 * teeth)
+    points = [(low, low), (high, low)]
+    x = high
+    for _ in range(teeth):
+        points += [
+            (x, high),
+            (x - tooth, high),
+            (x - tooth, low + tooth / 2),
+            (x - 2 * tooth, low + tooth / 2),
+        ]
+        x -= 2 * tooth
+    return Room(points, 3), tooth
+
+
+def test_the_search_step_is_10_cm_in_real_rooms_and_coarser_in_large_ones():
+    assert grid_step(Room(NOTCHED_ROOM, 2.5).bounding_box()) == pytest.approx(0.1)
+    assert grid_step(Room([(0, 0), (20, 0), (20, 5), (0, 5)], 3).bounding_box()) == pytest.approx(0.2)
+    assert grid_step(comb_room(-1000, 1000)[0].bounding_box()) == pytest.approx(20)
+
+
+def test_a_piece_that_runs_out_of_its_budget_is_left_out_and_the_next_ones_are_still_tried():
+    room = Room(NOTCHED_ROOM, 2.5)
+    items = [LayoutItem(5, "Armario", 3.0, 2.5), *REPORTED_CATALOG]
+
+    result = generate_layout(room, items, 10, max_piece_work=20_000)
+
+    assert result.warnings == [
+        "Se detuvo la búsqueda de un hueco para 'Armario' (id 5) al llegar al límite de posiciones "
+        "revisadas; no se colocó."
+    ]
+    assert sorted(p.item_id for p in result.positions) == [1, 2, 3, 4]
+
+
+def test_the_layout_budget_gives_up_the_remaining_pieces_with_one_warning():
+    room, tooth = comb_room(0, 20)
+    never = [LayoutItem(i, f"Pieza {i}", tooth * 1.5, tooth * 1.5) for i in range(1, 6)]
+
+    result = generate_layout(room, never, 1, max_work=500_000, max_piece_work=200_000)
+
+    assert result.positions == []
+    assert result.warnings[:2] == [
+        f"Se detuvo la búsqueda de un hueco para 'Pieza {i}' (id {i}) al llegar al límite de posiciones "
+        "revisadas; no se colocó."
+        for i in (1, 2)
+    ]
+    assert result.warnings[2] == (
+        "Se alcanzó el límite de trabajo de la distribución; no se colocaron: "
+        "'Pieza 3' (id 3), 'Pieza 4' (id 4), 'Pieza 5' (id 5)."
+    )
+    assert len(result.warnings) == 3
+
+
+def test_a_piece_that_fits_nowhere_within_the_budget_still_gets_no_room_warning():
+    room, tooth = comb_room(0, 7.5)
+
+    result = generate_layout(
+        room, [LayoutItem(1, "Pieza", tooth * 1.5, tooth * 1.5)], 1, max_work=10**9, max_piece_work=10**9
+    )
+
+    assert result.warnings == [
+        "No hay espacio para colocar 'Pieza' (id 1) dentro de la forma de la habitación respetando la "
+        "distancia mínima de 1 cm."
+    ]
+
+
+def test_the_worst_room_the_api_accepts_is_bounded():
+    # The largest box (coordinates within 1000 m), about the most vertices (200) and pieces (200), and
+    # pieces that never fit: unbounded, this took hours; the budget keeps it around half a second.
+    room, tooth = comb_room(-1000, 1000)
+    never = [LayoutItem(i, f"Pieza {i}", tooth * 1.5, tooth * 1.5) for i in range(200)]
+
+    started = time.perf_counter()
+    result = run_layout(room, never, 1)
+    elapsed = time.perf_counter() - started
+
+    assert result.layout.positions == []
+    assert "Se alcanzó el límite de trabajo de la distribución" in result.layout.warnings[-1]
+    assert result.ready_to_render is True
+    assert elapsed < 5  # ~0.5 s measured; generous so a slow CI machine does not fail it
 
 
 # --- Ported from tests/pipeline.test.ts ("CollisionValidator") -------------------------------------

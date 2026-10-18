@@ -4,6 +4,7 @@ Every endpoint needs a session token and only touches rooms of that account. A r
 answers 404, exactly like one that does not exist, so ids of other accounts cannot be probed.
 """
 
+import asyncio
 from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, HTTPException, Path, status
@@ -270,7 +271,11 @@ async def generate_room_layout(
     catalog = await _catalog_for_layout(session, current_user, body.item_ids)
     # The catalog is in centimeters; the layout works in meters (app.geometry.units).
     pieces = [LayoutItem(c.id, c.nombre, cm_to_m(c.ancho), cm_to_m(c.profundidad)) for c in catalog]
-    result = run_layout(room_geometry(row), pieces, body.constraints.min_distance_between_items_cm)
+    # The gap search is CPU-bound (bounded by the budget in app.geometry.layout), so it runs in a worker
+    # thread to keep the server responsive.
+    result = await asyncio.to_thread(
+        run_layout, room_geometry(row), pieces, body.constraints.min_distance_between_items_cm
+    )
 
     if result.ready_to_render:
         by_id = {c.id: c for c in catalog}
