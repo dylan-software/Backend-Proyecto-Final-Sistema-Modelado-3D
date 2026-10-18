@@ -73,6 +73,7 @@ de esta carpeta.
 | `ENABLE_DEBUG_ROUTES` | `true` registra `GET /api/v1/spaces/debug-vars`. Apagado por defecto; no definirla en producción. |
 | `MAX_CATALOG_ITEMS_PER_USER` | Máximo de muebles en el catálogo de una cuenta (300 por defecto). Al llegar, `POST /catalog` responde 409 sin llamar al modelo. |
 | `AI_REQUESTS_PER_MINUTE`, `AI_REQUESTS_PER_DAY` | Llamadas a la IA por cuenta (10 por minuto y 200 por día por defecto), sumando chat, catálogo, `/analyze` y `analyze-photo`. Más allá, 429 con `Retry-After`. |
+| `LOGIN_FAILURES_PER_EMAIL`, `LOGIN_FAILURE_WINDOW_MINUTES` | Intentos fallidos de login por email (10 en 15 minutos por defecto). Más allá, 429 con `Retry-After`. |
 
 Autenticación: todos los endpoints con datos de usuario (`/api/v1/spaces/*`, `/api/v1/chat` y `/geometry/*`) exigen
 `Authorization: Bearer <access_token>` de `POST /api/v1/auth/login`; sin token o con uno inválido o
@@ -164,6 +165,11 @@ Superar un límite responde 429 con la cabecera `Retry-After` en segundos.
 - **IA, por cuenta.** Chat, `POST /catalog`, `/analyze` y `analyze-photo` comparten un cupo de 10
   llamadas por minuto y 200 por día. Solo cuenta la petición que llega a llamar al modelo: un 404, un
   422 o un catálogo lleno no gastan cupo.
+- **Login, intentos fallidos por email.** Tras 10 fallos de un email en 15 minutos, ese email responde
+  429 sin comprobar la contraseña (aunque sea la correcta) hasta que el fallo más antiguo sale de la
+  ventana; un login correcto borra sus fallos. Se cuenta por email y no por IP porque la IP llega en
+  cabeceras que el cliente puede falsificar. Contrapartida: cualquiera puede bloquear un email durante
+  esa ventana fallando a propósito; el dueño vuelve a entrar cuando termina.
 
 ## Telemetría y auditoría
 

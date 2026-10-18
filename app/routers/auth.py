@@ -17,6 +17,7 @@ from app.database.connection import get_session
 from app.models.user import Usuario
 from app.routers.errors import DATABASE_ERRORS, database_unavailable
 from app.schemas.auth import TokenOut, UserLogin, UserOut, UserRegister
+from app.utils.rate_limit import login_failure_limiter, too_many_requests
 
 router = APIRouter(tags=["auth"])
 
@@ -213,9 +214,26 @@ async def login(body: UserLogin, session: AsyncSession = Depends(get_session)):
     Returns:
         200 with the bearer token, its lifetime in seconds and the user.
 
+    After LOGIN_FAILURES_PER_EMAIL failures for one email within LOGIN_FAILURE_WINDOW_MINUTES, that
+    email answers 429 without checking the password, even a right one, until the oldest failure
+    leaves the window; a successful login clears its failures. Counted per email, not per IP, so
+    forged X-Forwarded-For headers cannot get around it. The trade-off: anyone can lock an email out
+    for the window by failing on purpose; the owner can log in again when it ends.
+
     Raises:
-        HTTPException: 401 wrong email or password (same message for both), 503 database failure.
+        HTTPException: 401 wrong email or password (same message for both), 429 too many failures
+            for this email, 503 database failure.
     """
+    failures = login_failure_limiter()
+    wait = failures.retry_after(body.email)
+    if wait:
+        raise too_many_requests(
+            wait, "Demasiados intentos fallidos para este email; espera antes de volver a intentarlo."
+        )
+    # Counted as a failure now, with no await between the check and the count, and forgiven below if
+    # the password is right: otherwise many simultaneous attempts would all pass the check while scrypt
+    # runs in its thread.
+    failures.record(body.email)
     try:
         user = await session.scalar(select(Usuario).where(Usuario.email == body.email))
     except DATABASE_ERRORS as exc:
@@ -231,6 +249,7 @@ async def login(body: UserLogin, session: AsyncSession = Depends(get_session)):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    failures.reset(body.email)
     token, expires_in = create_access_token(user)
     return TokenOut(
         access_token=token,

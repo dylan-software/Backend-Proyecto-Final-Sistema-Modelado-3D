@@ -2,8 +2,8 @@
 
 The counters live in this process: they reset when the server restarts and are not shared between
 workers or instances. The Docker image runs a single uvicorn worker on one Render instance, so that
-is enough to stop a client from burning the AI quota; several workers would each allow the full
-limit.
+is enough to stop a client from burning the AI quota or guessing passwords; several workers would
+each allow the full limit.
 """
 
 import math
@@ -95,9 +95,16 @@ def ai_limiter():
     return RateLimiter([(settings.ai_requests_per_minute, MINUTE), (settings.ai_requests_per_day, DAY)])
 
 
+@lru_cache
+def login_failure_limiter():
+    """Failed logins per email. Not per IP: an IP comes from headers a client can forge."""
+    settings = get_settings()
+    return RateLimiter([(settings.login_failures_per_email, settings.login_failure_window_minutes * MINUTE)])
+
+
 def reset_all():
     """Forget every counter and re-read the settings (tests)."""
-    for factory in (ai_limiter,):
+    for factory in (ai_limiter, login_failure_limiter):
         factory.cache_clear()
 
 

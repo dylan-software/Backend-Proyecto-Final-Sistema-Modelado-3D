@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # Calls to the AI model (chat, catalog, analyze, analyze-photo) per account; 429 beyond them.
     ai_requests_per_minute: int = Field(10, gt=0)
     ai_requests_per_day: int = Field(200, gt=0)
+    # Failed logins allowed per email within the window; then 429 until the oldest failure expires.
+    login_failures_per_email: int = Field(10, gt=0)
+    login_failure_window_minutes: int = Field(15, gt=0)
 
     @property
     def is_production(self):
