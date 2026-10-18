@@ -98,6 +98,90 @@ def test_a_piece_wider_than_the_room_is_left_out_with_a_warning():
     assert "Item 1" in result.warnings[0]
 
 
+# The reported case: in the notched room the row packer placed 2 of these 4 pieces and dropped the
+# sofa and the chair, although both fit in the wide band below the notch (y between 1.5 and 3).
+REPORTED_CATALOG = [
+    LayoutItem(1, "Lámpara", 0.3, 0.3),
+    LayoutItem(2, "Sofá", 2.0, 0.9),
+    LayoutItem(3, "Mesa", 1.0, 0.6),
+    LayoutItem(4, "Silla", 0.45, 0.5),
+]
+
+
+def assert_apart(items, positions, min_distance_cm):
+    by_id = {i.id: i for i in items}
+    for i, a in enumerate(positions):
+        for b in positions[i + 1 :]:
+            ia, ib = by_id[a.item_id], by_id[b.item_id]
+            apart_x = max(b.x - (a.x + ia.width_m), a.x - (b.x + ib.width_m))
+            apart_y = max(b.y - (a.y + ia.depth_m), a.y - (b.y + ib.depth_m))
+            assert max(apart_x, apart_y) >= min_distance_cm / 100 - 1e-9, (a, b)
+
+
+def assert_outside_the_notch(items, positions):
+    by_id = {i.id: i for i in items}
+    for p in positions:
+        width, depth = by_id[p.item_id].width_m, by_id[p.item_id].depth_m
+        # Open rectangle x in (2, 4), y in (0, 1.5), with slack for sums such as 1.55 + 0.45.
+        assert not (p.x < 4 - 1e-9 and p.x + width > 2 + 1e-9 and p.y < 1.5 - 1e-9 and p.y + depth > 0), p
+
+
+@pytest.mark.parametrize("min_distance_cm", [10, 20, 49, 52])
+def test_a_piece_that_does_not_fit_in_its_row_is_placed_in_a_gap_further_down(min_distance_cm):
+    room = Room(NOTCHED_ROOM, 2.5)
+
+    result = generate_layout(room, REPORTED_CATALOG, min_distance_cm)
+
+    assert result.warnings == []
+    assert sorted(p.item_id for p in result.positions) == [1, 2, 3, 4]
+    assert_inside(room, REPORTED_CATALOG, result.positions)
+    assert_outside_the_notch(REPORTED_CATALOG, result.positions)
+    assert_apart(REPORTED_CATALOG, result.positions, min_distance_cm)
+    assert validate_layout(REPORTED_CATALOG, result.positions).valid is True
+
+
+def test_the_reported_sofa_and_chair_go_below_the_notch():
+    result = generate_layout(Room(NOTCHED_ROOM, 2.5), REPORTED_CATALOG, 49)
+
+    by_id = {p.item_id: p for p in result.positions}
+    sofa, chair = by_id[2], by_id[4]
+    assert (sofa.x, sofa.y) == pytest.approx((0.49, 1.59))
+    assert (chair.x, chair.y) == pytest.approx((1.29, 0.49))
+
+
+def test_the_gap_search_is_deterministic():
+    room = Room(NOTCHED_ROOM, 2.5)
+
+    assert generate_layout(room, REPORTED_CATALOG, 49) == generate_layout(room, REPORTED_CATALOG, 49)
+
+
+def test_a_piece_larger_than_every_gap_still_gets_a_warning():
+    room = Room(NOTCHED_ROOM, 2.5)
+    items = [*REPORTED_CATALOG, LayoutItem(5, "Armario", 3.0, 2.5)]
+
+    result = generate_layout(room, items, 10)
+
+    assert 5 not in {p.item_id for p in result.positions}
+    assert len(result.warnings) == 1
+    assert "'Armario' (id 5)" in result.warnings[0]
+    assert sorted(p.item_id for p in result.positions) == [1, 2, 3, 4]
+
+
+def test_pieces_placed_in_gaps_never_overlap_and_keep_their_distance():
+    room = Room(NOTCHED_ROOM, 2.5)
+    items = [
+        item(i, w, d) for i, (w, d) in enumerate([(200, 90), (120, 60), (90, 90), (45, 50), (60, 60)] * 4)
+    ]
+
+    result = generate_layout(room, items, 15)
+
+    assert result.warnings  # 20 pieces do not all fit: some are found in gaps, the rest are left out
+    assert validate_layout(items, result.positions).valid is True
+    assert_inside(room, items, result.positions)
+    assert_outside_the_notch(items, result.positions)
+    assert_apart(items, result.positions, 15)
+
+
 # --- Ported from tests/pipeline.test.ts ("CollisionValidator") -------------------------------------
 
 SQUARES = [item(1, 100, 100), item(2, 100, 100)]

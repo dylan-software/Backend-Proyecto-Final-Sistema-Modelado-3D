@@ -12,8 +12,11 @@ from dataclasses import dataclass, field
 
 from app.geometry.units import cm_to_m
 
-# When a piece does not fit at the cursor, it is shifted along x in steps of this size before giving up.
+# When a piece does not fit at the cursor, it is shifted along x, then along y, in steps of this size.
 SHIFT_STEP_M = 0.1
+
+# Floating-point slack in meters for comparisons of sums such as x + width + gap.
+EPSILON = 1e-9
 
 # Overlaps up to this depth are scan measurement error, not a real collision.
 OVERLAP_TOLERANCE_CM = 2.0
@@ -85,20 +88,52 @@ def footprint_corner(center_x, center_y, width_m, depth_m):
     return center_x - width_m / 2, center_y - depth_m / 2
 
 
+def _steps(start, stop):
+    """start, start + SHIFT_STEP_M, ... up to stop inclusive (nothing if stop < start)."""
+    step = 0
+    while (value := start + step * SHIFT_STEP_M) <= stop + EPSILON:
+        yield value
+        step += 1
+
+
+def _keeps_distance(x, y, item, placed, gap):
+    """Whether a footprint at (x, y) is at least gap away from every placed one along x or along y."""
+    for other_x, other_y, other in placed:
+        apart_x = x + item.width_m + gap <= other_x + EPSILON or other_x + other.width_m + gap <= x + EPSILON
+        apart_y = y + item.depth_m + gap <= other_y + EPSILON or other_y + other.depth_m + gap <= y + EPSILON
+        if not (apart_x or apart_y):
+            return False
+    return True
+
+
 def generate_layout(room, items, min_distance_cm):
     """Pack the items in rows inside the room, keeping min_distance_cm between them and from the walls.
 
     Rows start at the bounding box's minimum corner. A piece that would overflow the row starts a new
     one. Because the room may be irregular, a piece that fits in the bounding box but not in the real
-    polygon is shifted along x in SHIFT_STEP_M steps within the same row before it is given up. Never
-    raises on an impossible layout: pieces that do not fit are left out with a warning.
+    polygon is shifted along x in SHIFT_STEP_M steps within the same row. If no shift fits, the rows
+    below are searched in SHIFT_STEP_M steps along y, through the rest of the bounding box, for a gap
+    that is inside the polygon and min_distance_cm away from every piece placed so far; the row cursor
+    does not move for a piece placed that way. Every candidate is tried in a fixed order, so the same
+    input always gives the same layout. Never raises on an impossible layout: pieces that do not fit
+    anywhere are left out with a warning.
     """
     box = room.bounding_box()
     gap = cm_to_m(min_distance_cm)
     result = LayoutResult()
+    placed = []  # (x, y, item) of every piece placed so far
     cursor_x = box.min_x + gap
     cursor_y = box.min_y + gap
     row_depth = 0.0
+
+    def fits(x, y, item):
+        return room.contains_rectangle(x, y, item.width_m, item.depth_m) and _keeps_distance(
+            x, y, item, placed, gap
+        )
+
+    def place(x, y, item):
+        result.positions.append(ItemPosition(item.id, x, y))
+        placed.append((x, y, item))
 
     for item in items:
         if cursor_x + item.width_m > box.max_x - gap:
@@ -106,31 +141,33 @@ def generate_layout(room, items, min_distance_cm):
             cursor_y += row_depth + gap
             row_depth = 0.0
 
-        placed = False
-        step = 0
-        # Computed from the cursor each time instead of accumulating 0.1, which drifts in binary.
-        try_x = cursor_x
-        while try_x + item.width_m <= box.max_x - gap:
-            if room.contains_rectangle(try_x, cursor_y, item.width_m, item.depth_m):
-                result.positions.append(ItemPosition(item.id, try_x, cursor_y))
-                cursor_x = try_x + item.width_m + gap
-                row_depth = max(row_depth, item.depth_m)
-                placed = True
-                break
-            step += 1
-            try_x = cursor_x + step * SHIFT_STEP_M
+        # Offsets are computed from the start each time instead of accumulating 0.1, which drifts in binary.
+        row_x = next(
+            (x for x in _steps(cursor_x, box.max_x - gap - item.width_m) if fits(x, cursor_y, item)), None
+        )
+        if row_x is not None:
+            place(row_x, cursor_y, item)
+            cursor_x = row_x + item.width_m + gap
+            row_depth = max(row_depth, item.depth_m)
+            continue
 
-        if not placed:
-            if cursor_y + item.depth_m > box.max_y - gap:
-                result.warnings.append(
-                    f"No hay espacio para colocar '{item.name}' (id {item.id}) respetando la distancia "
-                    f"mínima de {min_distance_cm:g} cm."
-                )
-            else:
-                result.warnings.append(
-                    f"'{item.name}' (id {item.id}) no cupo dentro de la forma de la habitación "
-                    "en la fila actual."
-                )
+        gap_corner = next(
+            (
+                (x, y)
+                for y in _steps(cursor_y, box.max_y - gap - item.depth_m)
+                for x in _steps(box.min_x + gap, box.max_x - gap - item.width_m)
+                if fits(x, y, item)
+            ),
+            None,
+        )
+        if gap_corner is not None:
+            place(*gap_corner, item)
+            continue
+
+        result.warnings.append(
+            f"No hay espacio para colocar '{item.name}' (id {item.id}) dentro de la forma de la "
+            f"habitación respetando la distancia mínima de {min_distance_cm:g} cm."
+        )
     return result
 
 

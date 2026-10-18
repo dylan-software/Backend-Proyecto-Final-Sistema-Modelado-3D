@@ -126,9 +126,12 @@ lugar, `app/geometry/units.py`.
   guarda el **centro** (`posicion_x`, `posicion_z`). Las conversiones están en `app/geometry/layout.py`.
 - **Layout.** `POST /rooms/{id}/layout` con `{constraints: {minDistanceBetweenItemsCm, minClearPathCm},
   itemIds?}`. Lee la sala y el catálogo de la cuenta desde la base (nunca la geometría del cliente),
-  empaqueta los muebles en filas dentro del polígono real (desplazándolos de 10 en 10 cm si no caben) y
-  valida colisiones entre cajas: el solape es el **menor** de los solapes por eje, con 2 cm de
-  tolerancia. Responde `{layout: {positions, warnings}, validation, lighting, readyToRender, errors}`.
+  empaqueta los muebles en filas dentro del polígono real (desplazándolos de 10 en 10 cm si no caben;
+  si no caben en su fila, busca un hueco en las filas siguientes, de 10 en 10 cm en y, que respete la
+  distancia mínima con todo lo ya colocado) y valida colisiones entre cajas: el solape es el **menor**
+  de los solapes por eje, con 2 cm de tolerancia. `minDistanceBetweenItemsCm` se aplica entre muebles y
+  al borde de la caja delimitadora de la sala, no a las paredes interiores: un mueble puede quedar
+  pegado a la pared de una muesca. Responde `{layout: {positions, warnings}, validation, lighting, readyToRender, errors}`.
   Si `readyToRender` es true, las posiciones reemplazan los muebles anteriores de la sala.
   `minClearPathCm` se acepta pero no se usa: todavía no se guardan puertas.
 - **Chat.** El servidor arma el contexto (vértices, altura, área y muebles) tras verificar el dueño y lo
