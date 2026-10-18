@@ -1,3 +1,5 @@
+import time
+
 import pytest
 from sqlalchemy import select
 
@@ -192,6 +194,31 @@ async def test_empty_catalog_is_422(user_a, db_sessions):
     response = await layout(user_a, room_id)
 
     assert response.status_code == 422
+
+
+async def test_a_catalog_too_large_to_lay_out_without_item_ids_is_422_quickly(user_a, db_sessions):
+    room_id = await created_id(user_a)
+    ids = await add_catalog(db_sessions, "user-a", *[(f"Silla {i}", 45, 90, 50) for i in range(5000)])
+
+    started = time.perf_counter()
+    response = await layout(user_a, room_id)
+    elapsed = time.perf_counter() - started
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Tu catálogo tiene demasiados muebles para distribuirlos todos; envía itemIds, máximo 200."
+    )
+    assert elapsed < 2  # LIMIT 201: the 5000 rows are never loaded
+    assert await stored_pieces(db_sessions, room_id) == []
+    # The same catalog can still be laid out by choosing up to 200 pieces.
+    assert (await layout(user_a, room_id, itemIds=ids[:200])).status_code == 200
+
+
+async def test_exactly_200_pieces_without_item_ids_are_laid_out(user_a, db_sessions):
+    room_id = await created_id(user_a)
+    await add_catalog(db_sessions, "user-a", *[(f"Cojín {i}", 10, 10, 10) for i in range(200)])
+
+    assert (await layout(user_a, room_id)).status_code == 200
 
 
 @pytest.mark.parametrize(
