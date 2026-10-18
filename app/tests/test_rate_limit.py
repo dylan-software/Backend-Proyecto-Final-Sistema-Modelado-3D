@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from app.config import Settings, get_settings
@@ -6,6 +8,7 @@ from app.routers.chat import get_room_assistant
 from app.routers.spaces import get_coherence_validator, get_layout_suggester
 from app.tests.test_analyze_photo import FakeSuggester, upload
 from app.tests.test_api import catalog_item, room_scan
+from app.tests.test_auth import REGISTER
 from app.tests.test_chat import ask
 from app.tests.test_rooms_api import created_id
 from app.utils import rate_limit
@@ -199,3 +202,77 @@ async def test_analyze_and_analyze_photo_answer_429_beyond_the_quota(
     assert "Retry-After" in over.headers
     assert len(fake.calls) == 3
     assert other.status_code == 200
+
+
+# --- Failed logins, per email -------------------------------------------------------------------------
+
+LOGIN = "/api/v1/auth/login"
+RIGHT = {"email": "ana@mail.com", "password": "contraseña-larga"}
+WRONG = {"email": "ana@mail.com", "password": "otra-contraseña"}
+
+
+def test_login_failures_default_to_10_in_15_minutes():
+    assert Settings.model_fields["login_failures_per_email"].default == 10
+    assert Settings.model_fields["login_failure_window_minutes"].default == 15
+
+
+async def test_the_11th_login_after_10_failures_is_429_even_with_the_right_password(client, db_sessions):
+    await client.post("/api/v1/auth/register", json=REGISTER)
+    await client.post("/api/v1/auth/register", json={**REGISTER, "email": "beto@mail.com"})
+    for _ in range(10):
+        assert (await client.post(LOGIN, json=WRONG)).status_code == 401
+
+    response = await client.post(LOGIN, json=RIGHT)
+
+    assert response.status_code == 429
+    assert 1 <= int(response.headers["Retry-After"]) <= 15 * 60
+    assert response.json()["detail"] == (
+        "Demasiados intentos fallidos para este email; espera antes de volver a intentarlo."
+    )
+    # Another email is not affected.
+    assert (await client.post(LOGIN, json={**RIGHT, "email": "beto@mail.com"})).status_code == 200
+
+
+async def test_the_login_limit_ignores_forged_forwarding_headers_and_email_case(client, db_sessions):
+    await client.post("/api/v1/auth/register", json=REGISTER)
+    for i in range(10):
+        forged = {"X-Forwarded-For": f"10.0.0.{i}"}
+        assert (await client.post(LOGIN, json=WRONG, headers=forged)).status_code == 401
+
+    response = await client.post(
+        LOGIN, json={**RIGHT, "email": " ANA@Mail.com "}, headers={"X-Forwarded-For": "10.9.9.9"}
+    )
+
+    assert response.status_code == 429
+
+
+async def test_failures_for_an_unknown_email_are_counted_too(client, db_sessions, monkeypatch):
+    monkeypatch.setattr(get_settings(), "login_failures_per_email", 2)
+    rate_limit.reset_all()
+    nobody = {"email": "nadie@mail.com", "password": "contraseña-larga"}
+    for _ in range(2):
+        assert (await client.post(LOGIN, json=nobody)).status_code == 401
+
+    assert (await client.post(LOGIN, json=nobody)).status_code == 429
+
+
+async def test_a_successful_login_clears_the_failures(client, db_sessions, monkeypatch):
+    monkeypatch.setattr(get_settings(), "login_failures_per_email", 2)
+    rate_limit.reset_all()
+    await client.post("/api/v1/auth/register", json=REGISTER)
+    assert (await client.post(LOGIN, json=WRONG)).status_code == 401
+    assert (await client.post(LOGIN, json=RIGHT)).status_code == 200
+
+    assert (await client.post(LOGIN, json=WRONG)).status_code == 401
+    assert (await client.post(LOGIN, json=WRONG)).status_code == 401
+    assert (await client.post(LOGIN, json=RIGHT)).status_code == 429
+
+
+async def test_simultaneous_wrong_logins_cannot_get_past_the_limit(client, db_sessions, monkeypatch):
+    monkeypatch.setattr(get_settings(), "login_failures_per_email", 3)
+    rate_limit.reset_all()
+    await client.post("/api/v1/auth/register", json=REGISTER)
+
+    responses = await asyncio.gather(*[client.post(LOGIN, json=WRONG) for _ in range(8)])
+
+    assert sorted(r.status_code for r in responses) == [401] * 3 + [429] * 5
