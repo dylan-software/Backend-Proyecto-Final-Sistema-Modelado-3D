@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 from sqlalchemy import select
 
+from app.config import Settings, get_settings
 from app.main import app
 from app.models.space import Categoria, Habitacion, MuebleCatalogo, MuebleSugerido
 from app.routers.spaces import get_coherence_validator, get_layout_suggester
@@ -259,6 +260,42 @@ async def test_catalog_creates_custom_category_once(user_a, db_sessions, fake_va
     assert second.json()["categoria_id"] == first.json()["categoria_id"]
     async with db_sessions() as session:
         assert [c.nombre for c in (await session.scalars(select(Categoria))).all()] == ["Asientos bajos"]
+
+
+async def test_a_full_catalog_is_409_without_calling_the_model(
+    user_a, user_b, db_sessions, fake_validator, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "max_catalog_items_per_user", 2)
+    for _ in range(2):
+        assert (await user_a.post("/api/v1/spaces/catalog", json=catalog_item("Silla"))).status_code == 201
+    calls_before = len(fake_validator)
+
+    response = await user_a.post("/api/v1/spaces/catalog", json=catalog_item("Puff"))
+
+    assert response.status_code == 409
+    assert (
+        response.json()["detail"]
+        == "Tu catálogo ya tiene el máximo de 2 muebles; borra alguno para añadir otro."
+    )
+    assert len(fake_validator) == calls_before  # OmniRoute was not called
+    # The limit is per account.
+    assert (await user_b.post("/api/v1/spaces/catalog", json=catalog_item("Puff"))).status_code == 201
+
+
+async def test_deleting_a_piece_makes_room_in_a_full_catalog(
+    user_a, db_sessions, fake_validator, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "max_catalog_items_per_user", 1)
+    first = (await user_a.post("/api/v1/spaces/catalog", json=catalog_item("Silla"))).json()
+    assert (await user_a.post("/api/v1/spaces/catalog", json=catalog_item("Puff"))).status_code == 409
+
+    await user_a.delete(f"/api/v1/spaces/furniture/{first['id']}")
+
+    assert (await user_a.post("/api/v1/spaces/catalog", json=catalog_item("Puff"))).status_code == 201
+
+
+def test_the_catalog_limit_defaults_to_300():
+    assert Settings.model_fields["max_catalog_items_per_user"].default == 300
 
 
 async def test_catalog_requires_custom_category_for_others(user_a, db_sessions, fake_validator):

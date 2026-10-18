@@ -1,7 +1,7 @@
 import secrets
 from functools import lru_cache
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     allowed_origins: str = "http://localhost:3000"
     # Registers GET /api/v1/spaces/debug-vars; off unless explicitly enabled.
     enable_debug_routes: bool = False
+    # Most catalog pieces one account may store; POST /catalog answers 409 beyond it, before calling AI.
+    max_catalog_items_per_user: int = Field(300, gt=0)
 
     @property
     def is_production(self):
