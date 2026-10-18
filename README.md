@@ -74,6 +74,8 @@ de esta carpeta.
 | `MAX_CATALOG_ITEMS_PER_USER` | Máximo de muebles en el catálogo de una cuenta (300 por defecto). Al llegar, `POST /catalog` responde 409 sin llamar al modelo. |
 | `AI_REQUESTS_PER_MINUTE`, `AI_REQUESTS_PER_DAY` | Llamadas a la IA por cuenta (10 por minuto y 200 por día por defecto), sumando chat, catálogo, `/analyze` y `analyze-photo`. Más allá, 429 con `Retry-After`. |
 | `LOGIN_FAILURES_PER_EMAIL`, `LOGIN_FAILURE_WINDOW_MINUTES` | Intentos fallidos de login por email (10 en 15 minutos por defecto). Más allá, 429 con `Retry-After`. |
+| `REGISTRATIONS_PER_HOUR`, `REGISTRATIONS_PER_IP_PER_HOUR` | Registros por hora en total (20) y por IP de cliente (5, de mejor esfuerzo). Más allá, 429 con `Retry-After`. |
+| `TRUSTED_PROXY_HOPS` | Proxies propios delante del servidor que añaden entradas a `X-Forwarded-For` (0 por defecto: se ignora la cabecera). En Render, `1` (ya en `render.yaml`). |
 
 Autenticación: todos los endpoints con datos de usuario (`/api/v1/spaces/*`, `/api/v1/chat` y `/geometry/*`) exigen
 `Authorization: Bearer <access_token>` de `POST /api/v1/auth/login`; sin token o con uno inválido o
@@ -170,6 +172,18 @@ Superar un límite responde 429 con la cabecera `Retry-After` en segundos.
   ventana; un login correcto borra sus fallos. Se cuenta por email y no por IP porque la IP llega en
   cabeceras que el cliente puede falsificar. Contrapartida: cualquiera puede bloquear un email durante
   esa ventana fallando a propósito; el dueño vuelve a entrar cuando termina.
+- **Registro.** Como mucho 20 intentos por hora en total y 5 por IP de cliente; un intento con un email
+  ya registrado también cuenta. El límite global no depende de ninguna cabecera.
+
+**La IP detrás del proxy de Render.** `X-Forwarded-For` es una lista que empieza el cliente: puede enviar
+`X-Forwarded-For: 1.2.3.4` y cada proxy añade al final la IP que vio. Solo son fiables las entradas que
+añaden nuestros propios proxies, que son las **últimas** `TRUSTED_PROXY_HOPS`; la primera nunca se usa.
+Con `0` se ignora la cabecera y se usa el par TCP. uvicorn arranca sin `--forwarded-allow-ips`, así que
+en Render el par TCP es el proxy de Render, no el usuario; por eso `render.yaml` pone
+`TRUSTED_PROXY_HOPS=1`, **suponiendo** que el proxy de Render añade la IP real del cliente como última
+entrada. Esa suposición no está verificada: si fuera falsa, el límite por IP solo sería más débil (todas
+las peticiones contarían como una IP, o como la IP que el cliente escriba si Render no añadiera nada), y
+el límite global seguiría intacto. Por eso el login se limita por email y no por IP.
 
 ## Telemetría y auditoría
 

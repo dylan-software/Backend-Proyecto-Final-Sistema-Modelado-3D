@@ -276,3 +276,72 @@ async def test_simultaneous_wrong_logins_cannot_get_past_the_limit(client, db_se
     responses = await asyncio.gather(*[client.post(LOGIN, json=WRONG) for _ in range(8)])
 
     assert sorted(r.status_code for r in responses) == [401] * 3 + [429] * 5
+
+
+# --- Registrations: global, plus best-effort per IP ---------------------------------------------------
+
+REGISTER_URL = "/api/v1/auth/register"
+
+
+def behind_one_proxy(monkeypatch):
+    monkeypatch.setattr(get_settings(), "trusted_proxy_hops", 1)
+
+
+async def register(client, n, forwarded=None):
+    headers = {"X-Forwarded-For": forwarded} if forwarded else None
+    return await client.post(REGISTER_URL, json={**REGISTER, "email": f"user{n}@mail.com"}, headers=headers)
+
+
+def test_registration_limits_default_to_20_per_hour_and_5_per_ip_and_no_trusted_proxy():
+    assert Settings.model_fields["registrations_per_hour"].default == 20
+    assert Settings.model_fields["registrations_per_ip_per_hour"].default == 5
+    assert Settings.model_fields["trusted_proxy_hops"].default == 0
+
+
+async def test_the_6th_registration_from_one_ip_is_429_and_other_ips_are_not_affected(
+    client, db_sessions, monkeypatch
+):
+    behind_one_proxy(monkeypatch)
+    for n in range(5):
+        assert (await register(client, n, "1.1.1.1")).status_code == 201
+
+    response = await register(client, 5, "1.1.1.1")
+
+    assert response.status_code == 429
+    assert 1 <= int(response.headers["Retry-After"]) <= 3600
+    assert response.json()["detail"] == "Se han creado demasiadas cuentas; vuelve a intentarlo más tarde."
+    assert (await register(client, 6, "2.2.2.2")).status_code == 201
+
+
+async def test_forged_entries_before_the_proxy_one_do_not_change_the_ip(client, db_sessions, monkeypatch):
+    behind_one_proxy(monkeypatch)
+    for n in range(5):
+        # The client wrote the first entry; Render's proxy appended the real one last.
+        assert (await register(client, n, f"9.9.9.{n}, 1.1.1.1")).status_code == 201
+
+    assert (await register(client, 5, "8.8.8.8, 1.1.1.1")).status_code == 429
+
+
+async def test_without_trusted_proxies_the_header_is_ignored(client, db_sessions):
+    for n in range(5):
+        assert (await register(client, n, f"9.9.9.{n}")).status_code == 201
+
+    # Every request came from the same TCP peer, whatever the header said.
+    assert (await register(client, 5, "9.9.9.200")).status_code == 429
+
+
+async def test_the_21st_registration_in_an_hour_is_429_whatever_the_ip(client, db_sessions, monkeypatch):
+    behind_one_proxy(monkeypatch)
+    for n in range(20):
+        assert (await register(client, n, f"10.0.0.{n}")).status_code == 201
+
+    assert (await register(client, 20, "10.0.1.1")).status_code == 429
+
+
+async def test_a_taken_email_counts_as_a_registration_attempt(client, db_sessions, monkeypatch):
+    monkeypatch.setattr(get_settings(), "registrations_per_ip_per_hour", 2)
+    rate_limit.reset_all()
+    assert (await register(client, 0)).status_code == 201
+    assert (await register(client, 0)).status_code == 409
+
+    assert (await register(client, 1)).status_code == 429

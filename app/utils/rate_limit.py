@@ -102,9 +102,19 @@ def login_failure_limiter():
     return RateLimiter([(settings.login_failures_per_email, settings.login_failure_window_minutes * MINUTE)])
 
 
+@lru_cache
+def registration_limiter():
+    """Registrations, under one shared key for the global limit and one key per client IP."""
+    settings = get_settings()
+    return {
+        "global": RateLimiter([(settings.registrations_per_hour, HOUR)]),
+        "ip": RateLimiter([(settings.registrations_per_ip_per_hour, HOUR)]),
+    }
+
+
 def reset_all():
     """Forget every counter and re-read the settings (tests)."""
-    for factory in (ai_limiter, login_failure_limiter):
+    for factory in (ai_limiter, login_failure_limiter, registration_limiter):
         factory.cache_clear()
 
 
@@ -121,3 +131,37 @@ def enforce_ai_quota(user_id):
             wait, "Has hecho demasiadas peticiones a la IA; espera un poco antes de volver a intentarlo."
         )
     limiter.record(user_id)
+
+
+def enforce_registration_limit(request):
+    """Count one registration, or raise 429 if the global or this IP's hourly limit is used up.
+
+    The global limit holds whatever the headers say; the per-IP one is best effort (see client_ip).
+    """
+    limiters = registration_limiter()
+    keys = (("global", "all"), ("ip", client_ip(request)))
+    wait = max(limiters[name].retry_after(key) for name, key in keys)
+    if wait:
+        raise too_many_requests(wait, "Se han creado demasiadas cuentas; vuelve a intentarlo más tarde.")
+    for name, key in keys:
+        limiters[name].record(key)
+
+
+def client_ip(request):
+    """Best-effort client IP for the per-IP registration limit.
+
+    X-Forwarded-For is a list that anyone can start: a client may send "X-Forwarded-For: 1.2.3.4" and
+    every proxy appends what it saw after it. Only the entries added by our own proxies can be
+    trusted, and those are the last TRUSTED_PROXY_HOPS ones. With 0 (the default) the header is
+    ignored and the TCP peer is used. On Render the TCP peer is Render's proxy, not the user, so
+    TRUSTED_PROXY_HOPS=1 is set there, ASSUMING Render's proxy appends the real client IP as the last
+    entry. If that assumption is wrong, the per-IP limit is only weaker; the global registration
+    limit does not depend on any header.
+    """
+    hops = get_settings().trusted_proxy_hops
+    if hops > 0:
+        forwarded = [part.strip() for part in request.headers.get("x-forwarded-for", "").split(",")]
+        forwarded = [part for part in forwarded if part]
+        if len(forwarded) >= hops:
+            return forwarded[-hops]
+    return request.client.host if request.client else "unknown"

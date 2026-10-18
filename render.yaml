@@ -22,3 +22,5 @@ services:
         sync: false
       - key: OMNIROUTE_MODEL
         sync: false
+      - key: TRUSTED_PROXY_HOPS
+        value: "1" # Render's proxy appends the client IP to X-Forwarded-For (assumed; see README)
