@@ -6,7 +6,7 @@ import json
 import secrets
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -17,7 +17,7 @@ from app.database.connection import get_session
 from app.models.user import Usuario
 from app.routers.errors import DATABASE_ERRORS, database_unavailable
 from app.schemas.auth import TokenOut, UserLogin, UserOut, UserRegister
-from app.utils.rate_limit import login_failure_limiter, too_many_requests
+from app.utils.rate_limit import enforce_registration_limit, login_failure_limiter, too_many_requests
 
 router = APIRouter(tags=["auth"])
 
@@ -176,15 +176,19 @@ def ensure_same_user(requested, current):
 
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
-async def register(body: UserRegister, session: AsyncSession = Depends(get_session)):
+async def register(body: UserRegister, request: Request, session: AsyncSession = Depends(get_session)):
     """Create a user account with a hashed password.
+
+    At most REGISTRATIONS_PER_HOUR attempts in total and REGISTRATIONS_PER_IP_PER_HOUR per client IP;
+    an attempt with an email already taken counts too, so the limit also slows email probing.
 
     Returns:
         201 with the new user (without the password).
 
     Raises:
-        HTTPException: 409 email already registered, 503 database failure.
+        HTTPException: 409 email already registered, 429 too many registrations, 503 database failure.
     """
+    enforce_registration_limit(request)
     email_taken = HTTPException(status.HTTP_409_CONFLICT, "El email ya está registrado.")
     try:
         if await session.scalar(select(Usuario.id).where(Usuario.email == body.email)) is not None:
