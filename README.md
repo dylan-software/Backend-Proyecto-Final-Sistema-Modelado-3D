@@ -178,8 +178,11 @@ Superar un límite responde 429 con la cabecera `Retry-After` en segundos.
 **La IP detrás del proxy de Render.** `X-Forwarded-For` es una lista que empieza el cliente: puede enviar
 `X-Forwarded-For: 1.2.3.4` y cada proxy añade al final la IP que vio. Solo son fiables las entradas que
 añaden nuestros propios proxies, que son las **últimas** `TRUSTED_PROXY_HOPS`; la primera nunca se usa.
-Con `0` se ignora la cabecera y se usa el par TCP. uvicorn arranca sin `--forwarded-allow-ips`, así que
-en Render el par TCP es el proxy de Render, no el usuario; por eso `render.yaml` pone
+Con `0` se ignora la cabecera y se usa el par TCP. uvicorn arranca con `--no-proxy-headers` (en el
+`Dockerfile` y en `start.sh`) para que no reescriba él mismo la IP del cliente a partir de
+`X-Forwarded-For`: sin esa opción confía en las peticiones que llegan desde `127.0.0.1` y un cliente local
+podría cambiar de IP con cada petición. Así solo `TRUSTED_PROXY_HOPS` decide la IP, y en Render el par TCP
+es el proxy de Render, no el usuario; por eso `render.yaml` pone
 `TRUSTED_PROXY_HOPS=1`, **suponiendo** que el proxy de Render añade la IP real del cliente como última
 entrada. Esa suposición no está verificada: si fuera falsa, el límite por IP solo sería más débil (todas
 las peticiones contarían como una IP, o como la IP que el cliente escriba si Render no añadiera nada), y
