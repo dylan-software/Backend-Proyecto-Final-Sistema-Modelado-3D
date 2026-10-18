@@ -20,6 +20,7 @@ from app.models.space import Habitacion, MuebleCatalogo, MuebleSugerido
 from app.routers.auth import get_current_user
 from app.routers.errors import DATABASE_ERRORS, database_unavailable
 from app.schemas.room import (
+    MAX_LAYOUT_ITEMS,
     LayoutRequest,
     LayoutResponse,
     RoomCreate,
@@ -217,18 +218,29 @@ async def list_room_items(
 async def _catalog_for_layout(session, user_id, item_ids):
     """Catalog items of the account to place: the requested ids in that order, or the whole catalog.
 
+    The whole catalog is read with LIMIT MAX_LAYOUT_ITEMS + 1, so a huge catalog is refused without
+    loading it: itemIds is capped at the same MAX_LAYOUT_ITEMS by the schema.
+
     Raises:
-        HTTPException: 404 a requested id is not in the account's catalog, 422 nothing to place,
-            503 database failure.
+        HTTPException: 404 a requested id is not in the account's catalog, 422 nothing to place or
+            more than MAX_LAYOUT_ITEMS pieces without itemIds, 503 database failure.
     """
     query = select(MuebleCatalogo).where(MuebleCatalogo.user_id == user_id).order_by(MuebleCatalogo.id)
     if item_ids is not None:
         item_ids = list(dict.fromkeys(item_ids))  # repeated ids are placed once, first order kept
         query = query.where(MuebleCatalogo.id.in_(item_ids))
+    else:
+        query = query.limit(MAX_LAYOUT_ITEMS + 1)
     try:
         catalog = (await session.scalars(query)).all()
     except DATABASE_ERRORS as exc:
         raise database_unavailable() from exc
+    if item_ids is None and len(catalog) > MAX_LAYOUT_ITEMS:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"Tu catálogo tiene demasiados muebles para distribuirlos todos; envía itemIds, "
+            f"máximo {MAX_LAYOUT_ITEMS}.",
+        )
     if item_ids is not None:
         by_id = {item.id: item for item in catalog}
         missing = [item_id for item_id in item_ids if item_id not in by_id]
