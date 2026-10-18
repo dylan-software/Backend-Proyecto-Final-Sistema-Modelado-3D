@@ -168,6 +168,24 @@ async def test_a_layout_with_collisions_is_not_stored(user_a, db_sessions, monke
     assert await stored_pieces(db_sessions, room_id) == []
 
 
+async def test_the_layout_runs_in_a_worker_thread(user_a, db_sessions, monkeypatch):
+    room_id = await created_id(user_a)
+    await add_catalog(db_sessions, "user-a", ("Mesa", 100, 75, 60))
+    real_to_thread = rooms.asyncio.to_thread
+    calls = []
+
+    async def spy(func, *args):
+        calls.append(func)
+        return await real_to_thread(func, *args)
+
+    monkeypatch.setattr(rooms.asyncio, "to_thread", spy)
+    response = await layout(user_a, room_id)
+
+    assert response.status_code == 200
+    assert response.json()["readyToRender"] is True
+    assert calls == [rooms.run_layout]
+
+
 async def test_empty_catalog_is_422(user_a, db_sessions):
     room_id = await created_id(user_a)
 
