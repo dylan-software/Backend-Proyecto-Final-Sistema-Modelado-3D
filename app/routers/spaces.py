@@ -38,6 +38,7 @@ from app.schemas.space import (
 from app.services.omniroute import OmniRouteError, suggest_layout
 from app.services.semantic_filter import validate_furniture_coherence
 from app.utils.helpers import ImageDecodeError, decode_image, load_image_matrix, summarize_image
+from app.utils.rate_limit import enforce_ai_quota
 
 router = APIRouter(prefix="/api/v1/spaces", tags=["spaces"])
 
@@ -195,7 +196,7 @@ async def analyze_space(
 
     Raises:
         HTTPException: 401 no valid session, 403 user_id of another account, 422 invalid photo or
-            undeducible dimensions, 502 OmniRoute failure, 503 database failure.
+            undeducible dimensions, 429 AI quota used up, 502 OmniRoute failure, 503 database failure.
     """
     owner = ensure_same_user(body.user_id, current_user)
     # 1. Isolate floor, walls and ceiling from the scan; whatever is left are objects or noise.
@@ -225,6 +226,7 @@ async def analyze_space(
     scan = OctreeNode.from_points(residual) if len(residual) else None
 
     # 2. Ask OmniRoute for a design proposal.
+    enforce_ai_quota(current_user)
     proposal = await _request_proposal(
         suggester, dims, body.estilo, body.instrucciones, ransac["planos"], contexto_visual=visual
     )
@@ -293,8 +295,8 @@ async def analyze_room_photo(
     Raises:
         HTTPException: 401 no valid session, 404 no such room for this account, 413 photo larger than
             5 MB, 415 not a JPEG or PNG (declared type or first bytes), 422 the photo cannot be
-            decoded, 502 OmniRoute failure, 503 database failure. A body far above 5 MB is refused
-            with 413 by BodySizeLimitMiddleware before it is parsed.
+            decoded, 429 AI quota used up, 502 OmniRoute failure, 503 database failure. A body far
+            above 5 MB is refused with 413 by BodySizeLimitMiddleware before it is parsed.
     """
     row = await load_owned_room(session, room_id, current_user, selectinload(Habitacion.muebles))
     content_type = (file.content_type or "").split(";")[0].strip().lower()
@@ -325,6 +327,7 @@ async def analyze_room_photo(
     extra = {"contexto_visual": visual}
     if row.vertices is not None:
         extra["planta"] = floor.vertices_json()
+    enforce_ai_quota(current_user)
     proposal = await _request_proposal(suggester, dims, estilo, instrucciones, [], **extra)
     accepted, discarded = _filter_proposal(proposal["muebles"], dims, floor=floor)
 
@@ -397,7 +400,7 @@ async def add_catalog_furniture(
     Raises:
         HTTPException: 401 no valid session, 403 user_id of another account, 409 the account's
             catalog is full (MAX_CATALOG_ITEMS_PER_USER), 422 "Others" without custom_category or
-            incoherent name, 502 OmniRoute failure, 503 database failure.
+            incoherent name, 429 AI quota used up, 502 OmniRoute failure, 503 database failure.
     """
     owner = ensure_same_user(body.user_id, current_user)
     category_name = _category_name(body)
@@ -415,6 +418,7 @@ async def add_catalog_furniture(
             status.HTTP_409_CONFLICT,
             f"Tu catálogo ya tiene el máximo de {limit} muebles; borra alguno para añadir otro.",
         )
+    enforce_ai_quota(current_user)
     try:
         coherent = await validator(body.nombre)
     except OmniRouteError as exc:

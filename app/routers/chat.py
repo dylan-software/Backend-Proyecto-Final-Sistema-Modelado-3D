@@ -10,6 +10,7 @@ from app.routers.rooms import load_owned_room, room_geometry
 from app.schemas.chat import ChatReply, ChatRequest
 from app.services.omniroute import OmniRouteError
 from app.services.scene_assistant import answer_about_room, room_context
+from app.utils.rate_limit import enforce_ai_quota
 
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
 
@@ -37,7 +38,7 @@ async def chat_about_room(
 
     Raises:
         HTTPException: 401 no valid session, 404 no such room for this account, 422 invalid or too
-            long conversation, 502 OmniRoute failure, 503 database failure.
+            long conversation, 429 AI quota used up, 502 OmniRoute failure, 503 database failure.
     """
     row = await load_owned_room(session, body.room_id, current_user, selectinload(Habitacion.muebles))
     pieces = []
@@ -46,6 +47,7 @@ async def chat_about_room(
         pieces.append((piece.nombre, x, y, piece.ancho, piece.profundidad, piece.alto))
     context = room_context(row.nombre, room_geometry(row), pieces)
     conversation = [{"role": m.role, "content": m.content} for m in body.messages]
+    enforce_ai_quota(current_user)
     try:
         reply = await assistant(context, conversation)
     except OmniRouteError as exc:
