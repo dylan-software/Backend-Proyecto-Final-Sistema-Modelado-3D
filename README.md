@@ -71,6 +71,7 @@ de esta carpeta.
 | `ENVIRONMENT` | `production` en Render; cualquier otro valor se trata como desarrollo. |
 | `ALLOWED_ORIGINS` | Orígenes permitidos por CORS, separados por comas (por defecto `http://localhost:3000`). |
 | `ENABLE_DEBUG_ROUTES` | `true` registra `GET /api/v1/spaces/debug-vars`. Apagado por defecto; no definirla en producción. |
+| `MAX_CATALOG_ITEMS_PER_USER` | Máximo de muebles en el catálogo de una cuenta (300 por defecto). Al llegar, `POST /catalog` responde 409 sin llamar al modelo. |
 
 Autenticación: todos los endpoints con datos de usuario (`/api/v1/spaces/*`, `/api/v1/chat` y `/geometry/*`) exigen
 `Authorization: Bearer <access_token>` de `POST /api/v1/auth/login`; sin token o con uno inválido o

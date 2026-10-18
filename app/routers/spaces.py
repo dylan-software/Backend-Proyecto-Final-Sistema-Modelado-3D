@@ -395,11 +395,26 @@ async def add_catalog_furniture(
         201 with the stored item, its category and whether that category was just created.
 
     Raises:
-        HTTPException: 401 no valid session, 403 user_id of another account, 422 "Others" without
-            custom_category or incoherent name, 502 OmniRoute failure, 503 database failure.
+        HTTPException: 401 no valid session, 403 user_id of another account, 409 the account's
+            catalog is full (MAX_CATALOG_ITEMS_PER_USER), 422 "Others" without custom_category or
+            incoherent name, 502 OmniRoute failure, 503 database failure.
     """
     owner = ensure_same_user(body.user_id, current_user)
     category_name = _category_name(body)
+    # Checked before OmniRoute, so a full catalog never costs a model call. Two requests at the same
+    # time may both pass and leave the catalog one or two pieces over the limit, which is harmless.
+    limit = get_settings().max_catalog_items_per_user
+    try:
+        stored = await session.scalar(
+            select(func.count()).select_from(MuebleCatalogo).where(MuebleCatalogo.user_id == owner)
+        )
+    except DATABASE_ERRORS as exc:
+        raise database_unavailable() from exc
+    if stored >= limit:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Tu catálogo ya tiene el máximo de {limit} muebles; borra alguno para añadir otro.",
+        )
     try:
         coherent = await validator(body.nombre)
     except OmniRouteError as exc:
