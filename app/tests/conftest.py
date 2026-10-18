@@ -21,6 +21,7 @@ from app.main import app  # noqa: E402
 from app.models.space import Base  # noqa: E402
 from app.tests.auth_helpers import auth_headers  # noqa: E402
 from app.tests.db_guard import guard_message, unsafe_database_reason  # noqa: E402
+from app.utils import rate_limit  # noqa: E402
 
 
 def _configured_database_urls():
@@ -52,6 +53,14 @@ def _database_is_local():
     problem = _check_database_is_local()
     if problem:
         pytest.fail(problem, pytrace=False)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rate_limits():
+    """Request counters start empty in every test, and re-read settings a test may have changed."""
+    rate_limit.reset_all()
+    yield
+    rate_limit.reset_all()
 
 
 @pytest.fixture
