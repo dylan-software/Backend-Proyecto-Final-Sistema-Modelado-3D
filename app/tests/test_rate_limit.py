@@ -278,6 +278,21 @@ async def test_simultaneous_wrong_logins_cannot_get_past_the_limit(client, db_se
     assert sorted(r.status_code for r in responses) == [401] * 3 + [429] * 5
 
 
+async def test_a_429_exposes_retry_after_to_an_allowed_origin(client, db_sessions, monkeypatch):
+    monkeypatch.setattr(get_settings(), "login_failures_per_email", 1)
+    rate_limit.reset_all()
+    origin = {"Origin": "https://proyecto-3d.vercel.app"}
+    assert (await client.post(LOGIN, json=WRONG, headers=origin)).status_code == 401
+
+    response = await client.post(LOGIN, json=WRONG, headers=origin)
+
+    assert response.status_code == 429
+    assert int(response.headers["Retry-After"]) >= 1
+    assert response.headers["access-control-allow-origin"] == origin["Origin"]
+    exposed = [name.strip().lower() for name in response.headers["access-control-expose-headers"].split(",")]
+    assert "retry-after" in exposed
+
+
 # --- Registrations: global, plus best-effort per IP ---------------------------------------------------
 
 REGISTER_URL = "/api/v1/auth/register"

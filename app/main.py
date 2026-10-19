@@ -60,7 +60,8 @@ app.add_middleware(
     allow_methods=CORS_METHODS,
     allow_headers=["Authorization", "Content-Type"],
     # Browsers hide non-standard response headers from cross-origin JavaScript unless they are exposed.
-    expose_headers=[PROCESS_TIME_HEADER],
+    # Retry-After lets the frontend tell the user how long to wait after a 429.
+    expose_headers=[PROCESS_TIME_HEADER, "Retry-After"],
     # Browsers cache the preflight for 10 minutes instead of sending an OPTIONS before every request.
     max_age=600,
 )
