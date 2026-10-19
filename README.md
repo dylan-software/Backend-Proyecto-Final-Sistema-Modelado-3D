@@ -162,7 +162,8 @@ lugar, `app/geometry/units.py`.
 Los contadores viven en memoria (`app/utils/rate_limit.py`, ventanas deslizantes, sin dependencias):
 se pierden al reiniciar y no se comparten entre procesos. La imagen Docker arranca un único worker de
 uvicorn en una instancia de Render; con varios workers, cada uno permitiría el límite completo.
-Superar un límite responde 429 con la cabecera `Retry-After` en segundos.
+Superar un límite responde 429 con la cabecera `Retry-After` en segundos. CORS la expone
+(`expose_headers`), así que el frontend puede leerla desde otro dominio y decir cuánto esperar.
 
 - **IA, por cuenta.** Chat, `POST /catalog`, `/analyze` y `analyze-photo` comparten un cupo de 10
   llamadas por minuto y 200 por día. Solo cuenta la petición que llega a llamar al modelo: un 404, un
