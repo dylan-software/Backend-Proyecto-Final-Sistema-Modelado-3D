@@ -1,8 +1,8 @@
 node_modules/
 dist/
 *.tsbuildinfo
-.env
-.env.local
+.env*
+!.env.example
 
 # Python
 __pycache__/
