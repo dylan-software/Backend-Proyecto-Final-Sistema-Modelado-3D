@@ -13,15 +13,15 @@ from sqlalchemy.orm import selectinload
 from app.config import Settings, get_settings
 from app.database.connection import get_session
 from app.geometry.collision import check_bounding_box_collision
-from app.geometry.layout import footprint_corner
 from app.geometry.octree import OctreeNode
 from app.geometry.ransac_filter import clean_point_cloud
 from app.geometry.room import Room
 from app.models.space import Categoria, Habitacion, MuebleCatalogo, MuebleSugerido
 from app.routers.auth import ensure_same_user, get_current_user
 from app.routers.errors import DATABASE_ERRORS, database_unavailable
-from app.routers.rooms import load_owned_room, room_detail, room_geometry
-from app.schemas.room import AnalyzePhotoResponse, ColorShareOut, DiscardedItem, RoomItem, VisualContextOut
+from app.routers.rooms import load_owned_room, room_detail, room_item
+from app.schemas.photo import MAX_INSTRUCTIONS_LENGTH
+from app.schemas.room import AnalyzePhotoResponse, DiscardedItem
 from app.schemas.space import (
     AnalyzeRequest,
     AnalyzeResponse,
@@ -36,6 +36,7 @@ from app.schemas.space import (
     UserSpacesOut,
 )
 from app.services.omniroute import OmniRouteError, suggest_layout
+from app.services.photo_estimator import PhotoEstimateError, PhotoEstimateTimeout, estimate_room_from_photo
 from app.services.semantic_filter import validate_furniture_coherence
 from app.utils.helpers import ImageDecodeError, decode_image, load_image_matrix, summarize_image
 from app.utils.rate_limit import enforce_ai_quota
@@ -58,15 +59,22 @@ OTHERS_CATEGORY = "others"
 # format starts with. The declared type alone is just a header the client chose.
 PHOTO_SIGNATURES = {"image/jpeg": b"\xff\xd8\xff", "image/png": b"\x89PNG\r\n\x1a\n"}
 MAX_PHOTO_BYTES = 5 * 1024 * 1024
-# Whole multipart body: the photo plus boundaries, part headers, estilo and instrucciones. app.main
-# enforces it before the body is parsed; the endpoint then checks the photo itself against 5 MB.
+# Cuerpo multipart completo: la foto más separadores, cabeceras de cada parte, confirm_replace e
+# instrucciones. app.main lo aplica antes de parsear; luego el endpoint comprueba la foto contra 5 MB.
 MAX_PHOTO_REQUEST_BYTES = MAX_PHOTO_BYTES + 64 * 1024
 PHOTO_UPLOAD_PATH = r"^/api/v1/spaces/rooms/[^/]+/analyze-photo/?$"
+# Una foto con visión cuenta como 3 llamadas de la cuota de IA (v4, sección 2).
+PHOTO_AI_COST = 3
 
 
 def get_layout_suggester():
     """FastAPI dependency returning the layout generator; tests override it with a fake."""
     return suggest_layout
+
+
+def get_photo_estimator():
+    """Dependencia de FastAPI que devuelve el estimador de fotos; las pruebas lo sustituyen por uno falso."""
+    return estimate_room_from_photo
 
 
 def get_coherence_validator():
@@ -271,34 +279,13 @@ async def analyze_space(
     )
 
 
-@router.post("/rooms/{room_id}/analyze-photo", response_model=AnalyzePhotoResponse)
-async def analyze_room_photo(
-    room_id: int = Path(gt=0),
-    file: UploadFile = File(),
-    estilo: str = Form("moderno", min_length=1, max_length=60),
-    instrucciones: str | None = Form(None, max_length=1000),
-    session: AsyncSession = Depends(get_session),
-    suggester=Depends(get_layout_suggester),
-    current_user: str = Depends(get_current_user),
-):
-    """Furnish a saved room from a photo of it (multipart: file, and optional estilo and instrucciones).
-
-    The room's shape comes from the database, never from the client; the photo only feeds the colors
-    and brightness that guide OmniRoute, as in /analyze. Proposed pieces that do not fit inside the
-    room's real polygon, or that overlap each other, are discarded. The accepted ones replace the
-    furniture placed in the room before.
-
-    Returns:
-        200 with the room, the AI description, the placed items (minimum corner of each footprint,
-        meters), the discarded pieces and the photo's visual context.
+async def _read_photo(file):
+    """Tipo y bytes de la foto subida, tras comprobar formato, tamaño y que se pueda decodificar.
 
     Raises:
-        HTTPException: 401 no valid session, 404 no such room for this account, 413 photo larger than
-            5 MB, 415 not a JPEG or PNG (declared type or first bytes), 422 the photo cannot be
-            decoded, 429 AI quota used up, 502 OmniRoute failure, 503 database failure. A body far
-            above 5 MB is refused with 413 by BodySizeLimitMiddleware before it is parsed.
+        HTTPException: 415 no es JPEG/PNG (tipo declarado o primeros bytes), 413 más de 5 MB,
+            422 imagen no decodificable (texto fijo, sin el mensaje de la librería).
     """
-    row = await load_owned_room(session, room_id, current_user, selectinload(Habitacion.muebles))
     content_type = (file.content_type or "").split(";")[0].strip().lower()
     if content_type not in PHOTO_SIGNATURES:
         raise HTTPException(
@@ -313,51 +300,99 @@ async def analyze_room_photo(
             f"El archivo no es una foto {content_type.split('/')[1].upper()} aunque se declaró así.",
         )
     try:
-        matrix = await asyncio.to_thread(decode_image, data)
-    except ImageDecodeError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Imagen inválida: {exc}") from exc
-    visual = await asyncio.to_thread(summarize_image, matrix)
+        await asyncio.to_thread(decode_image, data)
+    except ImageDecodeError:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "Imagen inválida: no se pudo leer la foto."
+        ) from None
+    return content_type, data
 
-    # The AI and the collision check work in [0, ancho] x [0, profundidad]; the stored polygon may
-    # start anywhere, so it is shifted to its bounding box's corner and the results are shifted back.
-    geometry = room_geometry(row)
-    box = geometry.bounding_box()
-    floor = Room([(v.x - box.min_x, v.y - box.min_y) for v in geometry.vertices], geometry.height_m)
-    dims = np.array([box.max_x - box.min_x, geometry.height_m, box.max_y - box.min_y], dtype=float)
-    extra = {"contexto_visual": visual}
-    if row.vertices is not None:
-        extra["planta"] = floor.vertices_json()
-    enforce_ai_quota(current_user)
-    proposal = await _request_proposal(suggester, dims, estilo, instrucciones, [], **extra)
-    accepted, discarded = _filter_proposal(proposal["muebles"], dims, floor=floor)
 
-    pieces = []
-    for item in accepted:
-        values = item.model_dump()
-        values["posicion_x"] += box.min_x
-        values["posicion_z"] += box.min_y
-        pieces.append(MuebleSugerido(**values))
-    # delete-orphan cascade: the previous furniture of the room is deleted in the same commit.
-    row.muebles = pieces
+def _apply_photo_plan(row, plan):
+    """Reemplaza la forma de la sala por el rectángulo estimado y sus muebles por los objetos aceptados."""
+    room = plan.room
+    corners = [(0, 0), (room.width_m, 0), (room.width_m, room.length_m), (0, room.length_m)]
+    # to_record crea una lista NUEVA de vértices (decisión 5).
+    for column, value in Room(corners, room.height_m).to_record().items():
+        setattr(row, column, value)
+    # Cascada delete-orphan: los muebles anteriores se borran en el mismo commit.
+    row.muebles = [
+        MuebleSugerido(
+            nombre=item.name,
+            ancho=item.width_m,
+            alto=item.height_m,
+            profundidad=item.depth_m,
+            posicion_x=item.center_x,
+            posicion_y=item.elevation_m,
+            posicion_z=item.center_z,
+        )
+        for item in plan.objects
+    ]
+
+
+@router.post("/rooms/{room_id}/analyze-photo", response_model=AnalyzePhotoResponse)
+async def analyze_room_photo(
+    room_id: int = Path(gt=0),
+    file: UploadFile = File(),
+    confirm_replace: bool = Form(False),
+    instrucciones: str | None = Form(None, max_length=MAX_INSTRUCTIONS_LENGTH),
+    session: AsyncSession = Depends(get_session),
+    estimator=Depends(get_photo_estimator),
+    current_user: str = Depends(get_current_user),
+):
+    """Estima la sala y hasta 10 objetos a partir de una foto y los guarda (multipart: file,
+    confirm_replace e instrucciones opcionales). Contrato: CONTRATO-FOTO-A-3D.md.
+
+    La foto va a un modelo con visión y se descarta: no se guarda ni se registra. La forma de la sala
+    pasa a ser el rectángulo estimado y los objetos reemplazan los muebles anteriores; si la sala ya
+    tenía forma o muebles, hace falta confirm_replace=true.
+
+    Returns:
+        200 con la sala, estimated=true, la descripción, los objetos guardados (esquina mínima y
+        medidas, en metros) y los descartados con su motivo.
+
+    Raises:
+        HTTPException: 401 sin sesión válida, 404 sala inexistente o ajena, 409 falta confirmar el
+            reemplazo, 413 foto de más de 5 MB, 415 no es JPEG/PNG, 422 foto no decodificable o
+            formulario inválido, 429 sin cupo de IA (la foto cuesta PHOTO_AI_COST), 502 la IA falló o
+            no devolvió una estimación válida, 503 fallo de base de datos, 504 la IA tardó más de
+            AI_PHOTO_TIMEOUT. Ningún detail contiene la foto, las instrucciones ni la salida del modelo.
+    """
+    row = await load_owned_room(session, room_id, current_user, selectinload(Habitacion.muebles))
+    if (row.muebles or row.vertices is not None) and not confirm_replace:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Esta sala ya tiene forma o muebles guardados. Confirma que quieres reemplazarlos por lo "
+            "que estime la foto.",
+        )
+    content_type, data = await _read_photo(file)
+    enforce_ai_quota(current_user, PHOTO_AI_COST)
+    try:
+        plan = await estimator(data, content_type, (instrucciones or "").strip() or None)
+    except PhotoEstimateTimeout:
+        raise HTTPException(
+            status.HTTP_504_GATEWAY_TIMEOUT,
+            "El análisis de la foto tardó demasiado. Inténtalo de nuevo en un momento o con una foto "
+            "más pequeña.",
+        ) from None
+    except PhotoEstimateError:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, "El servicio de IA no devolvió una estimación válida."
+        ) from None
+
+    _apply_photo_plan(row, plan)
     try:
         await session.commit()
     except DATABASE_ERRORS as exc:
         await session.rollback()
         raise database_unavailable() from exc
 
-    items = []
-    for piece in pieces:
-        x, y = footprint_corner(piece.posicion_x, piece.posicion_z, piece.ancho, piece.profundidad)
-        items.append(RoomItem(id=piece.id, name=piece.nombre, x=x, y=y, rotation=0))
     return AnalyzePhotoResponse(
         room=room_detail(row),
-        description=proposal.get("descripcion", ""),
-        items=items,
-        discarded=[DiscardedItem(name=d.nombre, reason=d.motivo) for d in discarded],
-        visual_context=VisualContextOut(
-            brightness=visual["brillo"],
-            colors=[ColorShareOut(hex=c["hex"], share=c["proporcion"]) for c in visual["colores"]],
-        ),
+        estimated=True,
+        description=plan.description,
+        items=[room_item(piece) for piece in row.muebles],
+        discarded=[DiscardedItem(name=name, reason=reason) for name, reason in plan.discarded],
     )
 
 

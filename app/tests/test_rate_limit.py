@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 from fastapi import HTTPException
@@ -7,10 +8,12 @@ from app.config import Settings, get_settings
 from app.main import app
 from app.routers.chat import get_room_assistant
 from app.routers.spaces import get_coherence_validator, get_layout_suggester
+from app.services import photo_estimator
 from app.tests.test_analyze_photo import FakeSuggester, upload
 from app.tests.test_api import catalog_item, room_scan
 from app.tests.test_auth import REGISTER
 from app.tests.test_chat import ask
+from app.tests.test_photo_estimator import ESTIMATE, FakeModel
 from app.tests.test_rooms_api import created_id
 from app.utils import rate_limit
 from app.utils.rate_limit import DAY, MINUTE, RateLimiter
@@ -243,8 +246,11 @@ async def test_catalog_shares_the_ai_quota_and_answers_429(user_a, user_b, db_se
 async def test_analyze_and_analyze_photo_answer_429_beyond_the_quota(
     user_a, user_b, db_sessions, monkeypatch
 ):
-    limit_ai_calls(monkeypatch, per_minute=2)
+    # /analyze cuesta 1 y la foto 3: con 4 por minuto, la segunda foto ya no cabe.
+    limit_ai_calls(monkeypatch, per_minute=4)
     fake = FakeSuggester()
+    vision = FakeModel(json.dumps(ESTIMATE))
+    monkeypatch.setattr(photo_estimator, "chat_completion", vision)
     app.dependency_overrides[get_layout_suggester] = lambda: fake
     try:
         room_id = await created_id(user_a)
@@ -259,7 +265,7 @@ async def test_analyze_and_analyze_photo_answer_429_beyond_the_quota(
 
     assert (analyze.status_code, photo.status_code, over.status_code) == (201, 200, 429)
     assert "Retry-After" in over.headers
-    assert len(fake.calls) == 3
+    assert (len(fake.calls), len(vision.calls)) == (1, 2)  # el 429 nunca llegó al modelo
     assert other.status_code == 200
 
 

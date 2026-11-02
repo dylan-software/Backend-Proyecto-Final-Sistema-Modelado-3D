@@ -89,9 +89,12 @@ async def test_items_return_the_minimum_corner(user_a, db_sessions):
 
     assert response.status_code == 200
     (item,) = response.json()["items"]
-    assert set(item) == {"id", "name", "x", "y", "rotation"}
+    assert set(item) == {"id", "name", "x", "y", "rotation", "widthM", "depthM", "heightM", "elevationM"}
     assert item["name"] == "Mesa"
     assert (item["x"], item["y"], item["rotation"]) == pytest.approx((0.15, 0.15, 0))
+    # El catálogo está en cm (100 x 75 x 60); la sala y sus muebles, en metros.
+    sizes = (item["widthM"], item["depthM"], item["heightM"], item["elevationM"])
+    assert sizes == pytest.approx((1.0, 0.6, 0.75, 0))
 
 
 async def test_items_of_a_room_without_furniture_is_empty(user_a, db_sessions):
