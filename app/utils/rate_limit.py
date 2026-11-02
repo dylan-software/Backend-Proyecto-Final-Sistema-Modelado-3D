@@ -48,27 +48,35 @@ class RateLimiter:
             return None
         return events
 
-    def retry_after(self, key):
-        """Seconds until one more event for key is allowed; 0 if it is allowed now."""
+    def retry_after(self, key, cost=1):
+        """Segundos hasta que caben `cost` eventos más para key; 0 si caben ya.
+
+        Si cost supera algún límite, nunca cabrían: se devuelve la ventana entera de ese límite.
+        """
         with self._lock:
             now = self._clock()
             events = self._recent(key, now)
-            if events is None:
-                return 0
             wait = 0
             for limit, window in self._limits:
+                if cost > limit:
+                    wait = max(wait, window)
+                    continue
+                if events is None:
+                    continue
                 in_window = [t for t in events if t > now - window]
-                if len(in_window) >= limit:
-                    # The event that must leave the window for one more to fit.
-                    wait = max(wait, in_window[-limit] + window - now)
+                excess = len(in_window) + cost - limit
+                if excess > 0:
+                    # El evento que debe salir de la ventana para que quepan cost más.
+                    wait = max(wait, in_window[excess - 1] + window - now)
             return wait
 
-    def record(self, key):
+    def record(self, key, cost=1):
+        """Registra cost eventos para key en el instante actual."""
         with self._lock:
             now = self._clock()
             if key not in self._events and len(self._events) >= MAX_KEYS:
                 self._forget_idle(now)
-            self._events.setdefault(key, deque()).append(now)
+            self._events.setdefault(key, deque()).extend([now] * cost)
 
     def reset(self, key):
         with self._lock:
@@ -118,19 +126,20 @@ def reset_all():
         factory.cache_clear()
 
 
-def enforce_ai_quota(user_id):
-    """Count one AI call for the account, or raise 429 if it has used its quota.
+def enforce_ai_quota(user_id, cost=1):
+    """Cuenta `cost` llamadas a la IA para la cuenta, o lanza 429 si no le queda cupo para todas.
 
-    Call it right before the model is called, after the cheap checks (ownership, validation, catalog
-    limit), so requests rejected for other reasons do not use the quota.
+    Se llama justo antes de llamar al modelo, después de las comprobaciones baratas (dueño, validación,
+    tope del catálogo), para que las peticiones rechazadas por otro motivo no gasten cupo. Una foto
+    cuesta más que un mensaje (cost=3). Sin await entre la comprobación y el registro (decisión 24).
     """
     limiter = ai_limiter()
-    wait = limiter.retry_after(user_id)
+    wait = limiter.retry_after(user_id, cost)
     if wait:
         raise too_many_requests(
             wait, "Has hecho demasiadas peticiones a la IA; espera un poco antes de volver a intentarlo."
         )
-    limiter.record(user_id)
+    limiter.record(user_id, cost)
 
 
 def enforce_registration_limit(request):
