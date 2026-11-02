@@ -66,13 +66,14 @@ de esta carpeta.
 | `OMNIROUTE_API_KEY` | Clave de OmniRoute. |
 | `OMNIROUTE_MODEL` | Modelo o combo configurado en OmniRoute. |
 | `OMNIROUTE_TIMEOUT` | Segundos de espera por respuesta (60 por defecto). |
+| `AI_PHOTO_TIMEOUT` | Tiempo límite TOTAL, en segundos, del análisis de una foto con visión (45 por defecto, entre 1 y 300). Al agotarse, `analyze-photo` responde 504. |
 | `JWT_SECRET` | Clave HS256 de los tokens de sesión. Obligatoria con `ENVIRONMENT=production` (el servidor no arranca sin ella); en desarrollo, si falta, se genera una aleatoria en cada arranque. Cambiarla cierra todas las sesiones. |
 | `JWT_EXPIRE_MINUTES` | Vida del token en minutos (60 por defecto). |
 | `ENVIRONMENT` | `production` en Render; cualquier otro valor se trata como desarrollo. |
 | `ALLOWED_ORIGINS` | Orígenes permitidos por CORS, separados por comas (por defecto `http://localhost:3000`). |
 | `ENABLE_DEBUG_ROUTES` | `true` registra `GET /api/v1/spaces/debug-vars`. Apagado por defecto; no definirla en producción. |
 | `MAX_CATALOG_ITEMS_PER_USER` | Máximo de muebles en el catálogo de una cuenta (300 por defecto). Al llegar, `POST /catalog` responde 409 sin llamar al modelo. |
-| `AI_REQUESTS_PER_MINUTE`, `AI_REQUESTS_PER_DAY` | Llamadas a la IA por cuenta (10 por minuto y 200 por día por defecto), sumando chat, catálogo, `/analyze` y `analyze-photo`. Más allá, 429 con `Retry-After`. |
+| `AI_REQUESTS_PER_MINUTE`, `AI_REQUESTS_PER_DAY` | Llamadas a la IA por cuenta (10 por minuto y 200 por día por defecto), sumando chat, catálogo, `/analyze` y `analyze-photo` (cada foto cuenta como 3). Más allá, 429 con `Retry-After`. |
 | `LOGIN_FAILURES_PER_EMAIL`, `LOGIN_FAILURE_WINDOW_MINUTES` | Intentos fallidos de login por email (10 en 15 minutos por defecto). Más allá, 429 con `Retry-After`. |
 | `REGISTRATIONS_PER_HOUR`, `REGISTRATIONS_PER_IP_PER_HOUR` | Registros por hora en total (20) y por IP de cliente (5, de mejor esfuerzo). Más allá, 429 con `Retry-After`. |
 | `TRUSTED_PROXY_HOPS` | Proxies propios delante del servidor que añaden entradas a `X-Forwarded-For` (0 por defecto: se ignora la cabecera). En Render, `1` (ya en `render.yaml`). |
@@ -94,9 +95,9 @@ responden 404, igual que los inexistentes. `/`, `/api/v1/health` y `/api/v1/auth
 | PATCH | `/api/v1/spaces/rooms/{id}/vertices/{index}` | Mueve un vértice: `{x, y}`. 422 si el polígono queda inválido (la sala no cambia). |
 | POST | `/api/v1/spaces/rooms/{id}/vertices` | Inserta un vértice: `{afterIndex, x, y}`. |
 | DELETE | `/api/v1/spaces/rooms/{id}/vertices/{index}` | Elimina un vértice; una sala conserva al menos 3. |
-| GET | `/api/v1/spaces/rooms/{id}/items` | Muebles colocados: `{items: [{id, name, x, y, rotation}]}`. |
+| GET | `/api/v1/spaces/rooms/{id}/items` | Muebles colocados: `{items: [{id, name, x, y, rotation, widthM, depthM, heightM, elevationM}]}`. |
 | POST | `/api/v1/spaces/rooms/{id}/layout` | Distribuye el catálogo dentro del polígono real (sin IA) y guarda el resultado. |
-| POST | `/api/v1/spaces/rooms/{id}/analyze-photo` | Multipart (`file`, `estilo`, `instrucciones`): amuebla la sala guardada con OmniRoute guiado por la foto. |
+| POST | `/api/v1/spaces/rooms/{id}/analyze-photo` | Multipart (`file`, `confirm_replace`, `instrucciones`): la IA con visión estima la sala y hasta 10 objetos, que reemplazan la forma y los muebles de la sala. |
 | POST | `/api/v1/chat` | Chat sobre una sala: `{roomId, messages}` → `{role: "assistant", content}`. |
 | POST | `/geometry/point-cloud` | Solo el filtro RANSAC sobre una nube de puntos. |
 | POST | `/geometry/collision` | Solo la validación de colisiones de una caja. |
@@ -149,13 +150,32 @@ lugar, `app/geometry/units.py`.
   pone en el system prompt entre delimitadores, como datos no confiables. El asistente no recibe
   imágenes. Sin bucle de tool-calling, así funciona con cualquier modelo de OmniRoute. Máximo 20
   mensajes de 2000 caracteres; los errores de OmniRoute responden 502.
-- **Foto.** `POST /rooms/{id}/analyze-photo` acepta solo `image/jpeg` e `image/png`, y los primeros bytes
-  del archivo deben coincidir con el tipo declarado (415 si no), de hasta 5 MB (413 si no); una imagen
-  que no se puede decodificar responde 422. FastAPI parsea el multipart antes de autenticar, así que
-  `BodySizeLimitMiddleware` rechaza con 413 un cuerpo de más de 5 MB + 64 KB antes de parsearlo, haya
-  `Content-Length` o venga en chunks. Reutiliza el filtro de
-  `/analyze` y descarta además los muebles que se salen del polígono real. Los aceptados reemplazan los
-  muebles anteriores de la sala.
+- **Foto a 3D.** `POST /rooms/{id}/analyze-photo` (multipart). Contrato completo en
+  `CONTRATO-FOTO-A-3D.md`, en la carpeta que contiene los tres repos.
+  - Campos: `file` (`image/jpeg` o `image/png`, los primeros bytes deben coincidir con el tipo
+    declarado, hasta 5 MB), `confirm_replace` (`false` por defecto) e `instrucciones` (opcional,
+    máximo 500 caracteres). Las instrucciones llegan al modelo como un valor JSON entre delimitadores:
+    son datos, no órdenes.
+  - La foto va una sola vez al modelo con visión (`image_url` con un *data URL* en base64, por el mismo
+    `/chat/completions`) y se descarta: no se guarda ni se registra. Ni la foto, ni su base64, ni las
+    instrucciones, ni la salida del modelo aparecen en logs o en mensajes de error.
+  - La respuesta del modelo se valida con un esquema estricto (`app/schemas/photo.py`): sala de 1,5 a
+    12 m por lado y de 2 a 4 m de alto, objetos de 5 a 400 cm por lado, nombres de texto plano de
+    hasta 60 caracteres, sin NaN ni infinitos y sin campos desconocidos. Un objeto inválido se descarta
+    con su motivo; uno que se sale de la sala hasta 10 cm se mete dentro; se aceptan como mucho 10.
+  - Sin migración: la sala pasa a ser el rectángulo estimado (`vertices`, `ancho`, `profundidad`,
+    `alto`) y los objetos reemplazan sus muebles (centro en `posicion_x`/`posicion_z`, base en
+    `posicion_y`), en una sola transacción.
+  - Respuesta 200: `{room, estimated: true, description, items, discarded: [{name, reason}]}`.
+    `estimated` no se guarda. Los `items` traen las medidas para dibujar cada objeto como una caja.
+  - Errores: 401; 404 sala inexistente o ajena; **409** si la sala ya tiene forma o muebles y falta
+    `confirm_replace=true` (no lee la foto ni gasta cupo); 413; 415; 422 imagen no decodificable
+    (texto fijo) o formulario inválido (sin eco de la entrada); 429 (la foto cuesta 3 llamadas);
+    **502** si la IA falla o no devuelve una estimación válida; 503; **504** si la IA no responde en
+    `AI_PHOTO_TIMEOUT` segundos ("El análisis de la foto tardó demasiado…"). En 502 y 504 la sala no
+    cambia.
+  - FastAPI parsea el multipart antes de autenticar, así que `BodySizeLimitMiddleware` rechaza con 413
+    un cuerpo de más de 5 MB + 64 KB antes de parsearlo, haya `Content-Length` o venga en chunks.
 
 ## Límites de peticiones
 
@@ -166,8 +186,9 @@ Superar un límite responde 429 con la cabecera `Retry-After` en segundos. CORS 
 (`expose_headers`), así que el frontend puede leerla desde otro dominio y decir cuánto esperar.
 
 - **IA, por cuenta.** Chat, `POST /catalog`, `/analyze` y `analyze-photo` comparten un cupo de 10
-  llamadas por minuto y 200 por día. Solo cuenta la petición que llega a llamar al modelo: un 404, un
-  422 o un catálogo lleno no gastan cupo.
+  llamadas por minuto y 200 por día. Una foto cuenta como 3 llamadas (3 fotos por minuto como mucho).
+  Solo cuenta la petición que llega a llamar al modelo: un 404, un 409, un 415, un 422 o un catálogo
+  lleno no gastan cupo; un 502 o un 504 sí, porque la llamada ya se hizo.
 - **Login, intentos fallidos por email.** Tras 10 fallos de un email en 15 minutos, ese email responde
   429 sin comprobar la contraseña (aunque sea la correcta) hasta que el fallo más antiguo sale de la
   ventana; un login correcto borra sus fallos. Se cuenta por email y no por IP porque la IP llega en
