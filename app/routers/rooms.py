@@ -49,6 +49,22 @@ def room_detail(row):
     )
 
 
+def room_item(piece):
+    """Vista de API de un muebles_sugeridos: la BD guarda el centro; la API da la esquina mínima."""
+    x, y = footprint_corner(piece.posicion_x, piece.posicion_z, piece.ancho, piece.profundidad)
+    return RoomItem(
+        id=piece.id,
+        name=piece.nombre,
+        x=x,
+        y=y,
+        rotation=0,
+        width_m=piece.ancho,
+        depth_m=piece.profundidad,
+        height_m=piece.alto,
+        elevation_m=piece.posicion_y,
+    )
+
+
 def room_geometry(row):
     return Room.from_record(row.vertices, row.ancho, row.profundidad, row.alto)
 
@@ -208,11 +224,7 @@ async def list_room_items(
         HTTPException: 401 no valid session, 404 no such room for this account, 503 database failure.
     """
     row = await load_owned_room(session, room_id, current_user, selectinload(Habitacion.muebles))
-    items = []
-    for piece in sorted(row.muebles, key=lambda piece: piece.id):
-        x, y = footprint_corner(piece.posicion_x, piece.posicion_z, piece.ancho, piece.profundidad)
-        items.append(RoomItem(id=piece.id, name=piece.nombre, x=x, y=y, rotation=0))
-    return RoomItemsOut(items=items)
+    return RoomItemsOut(items=[room_item(piece) for piece in sorted(row.muebles, key=lambda piece: piece.id)])
 
 
 async def _catalog_for_layout(session, user_id, item_ids):

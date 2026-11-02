@@ -49,13 +49,21 @@ class RoomDetail(CamelModel):
 
 
 class RoomItem(CamelModel):
-    """A piece placed in the room. x/y are the MINIMUM corner of its footprint, in meters."""
+    """Un mueble colocado en la sala. x/y son la esquina MÍNIMA de su huella, en metros.
+
+    widthM (eje x), depthM (eje z), heightM y elevationM (altura de la base) permiten dibujarlo como
+    una caja sin otra petición.
+    """
 
     id: int
     name: str
     x: float
     y: float
     rotation: float
+    width_m: float
+    depth_m: float
+    height_m: float
+    elevation_m: float
 
 
 class RoomItemsOut(CamelModel):
@@ -134,10 +142,13 @@ class VisualContextOut(CamelModel):
 
 
 class AnalyzePhotoResponse(CamelModel):
-    """Result of POST /rooms/{id}/analyze-photo: the room and the AI furniture now placed in it."""
+    """Resultado de POST /rooms/{id}/analyze-photo: la sala estimada y los objetos ya guardados en ella.
+
+    estimated es siempre true aquí y no se guarda (no hay columna). Contrato: CONTRATO-FOTO-A-3D.md.
+    """
 
     room: RoomDetail
+    estimated: bool
     description: str
     items: list[RoomItem]
     discarded: list[DiscardedItem]
-    visual_context: VisualContextOut
