@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     omniroute_api_key: str = ""
     omniroute_model: str = ""
     omniroute_timeout: float = 60.0
+    # Tiempo límite TOTAL (segundos) del análisis de una foto con visión; al agotarse, 504 (AI_PHOTO_TIMEOUT).
+    ai_photo_timeout: float = Field(45.0, gt=0, le=300)
     jwt_secret: str = ""
     jwt_expire_minutes: int = 60
     # "production" makes the server refuse to start without a fixed JWT_SECRET.
