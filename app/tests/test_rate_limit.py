@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+from fastapi import HTTPException
 
 from app.config import Settings, get_settings
 from app.main import app
@@ -87,6 +88,64 @@ def test_reset_forgets_a_key():
     limiter.reset("a")
 
     assert limiter.retry_after("a") == 0
+
+
+def test_an_event_with_a_cost_counts_that_many_times():
+    clock = FakeClock()
+    limiter = RateLimiter([(10, MINUTE)], clock=clock)
+    for _ in range(3):
+        assert limiter.retry_after("a", cost=3) == 0
+        limiter.record("a", cost=3)
+        clock.now += 10
+
+    # 9 de 10 usados: cabe una llamada simple, pero no otra de coste 3.
+    assert limiter.retry_after("a") == 0
+    assert limiter.retry_after("a", cost=3) == pytest.approx(30)  # el primer lote sale a +60
+    clock.now += 30
+    assert limiter.retry_after("a", cost=3) == 0
+
+
+def test_the_wait_for_a_cost_is_until_enough_events_leave():
+    clock = FakeClock()
+    limiter = RateLimiter([(5, MINUTE)], clock=clock)
+    for _ in range(5):
+        limiter.record("a")
+        clock.now += 1
+
+    # Para que quepan 3 deben salir los 3 más antiguos: el tercero (t=1002) sale a 1062.
+    assert limiter.retry_after("a", cost=3) == pytest.approx(1062 - clock.now)
+
+
+def test_a_cost_above_the_limit_never_fits():
+    limiter = RateLimiter([(2, MINUTE), (100, DAY)], clock=FakeClock())
+
+    assert limiter.retry_after("a", cost=3) == MINUTE
+
+
+def test_a_cost_respects_every_window():
+    clock = FakeClock()
+    limiter = RateLimiter([(10, MINUTE), (12, DAY)], clock=clock)
+    limiter.record("a", cost=10)
+    clock.now += 2 * MINUTE
+
+    # La ventana del minuto ya está libre, pero en el día solo quedan 2.
+    assert limiter.retry_after("a", cost=2) == 0
+    assert limiter.retry_after("a", cost=3) == pytest.approx(DAY - 2 * MINUTE)
+
+
+async def test_a_photo_quota_of_3_leaves_room_for_one_chat_message(
+    user_a, db_sessions, chat_model, monkeypatch
+):
+    limit_ai_calls(monkeypatch, per_minute=10)
+    room_id = await created_id(user_a)
+    for _ in range(3):
+        rate_limit.enforce_ai_quota("user-a", cost=3)
+
+    assert (await user_a.post(CHAT, json={"roomId": room_id, "messages": ask()})).status_code == 200
+    with pytest.raises(HTTPException) as raised:
+        rate_limit.enforce_ai_quota("user-a", cost=3)
+    assert raised.value.status_code == 429
+    assert int(raised.value.headers["Retry-After"]) >= 1
 
 
 def test_idle_keys_are_dropped_when_too_many_are_kept(monkeypatch):
