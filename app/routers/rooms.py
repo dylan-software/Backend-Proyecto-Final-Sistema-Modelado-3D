@@ -18,7 +18,7 @@ from app.geometry.room import Room, RoomError
 from app.geometry.units import cm_to_m
 from app.models.space import Habitacion, MuebleCatalogo, MuebleSugerido
 from app.routers.auth import get_current_user
-from app.routers.errors import DATABASE_ERRORS, database_unavailable
+from app.routers.errors import DATABASE_ERRORS, database_error
 from app.schemas.room import (
     MAX_LAYOUT_ITEMS,
     LayoutRequest,
@@ -81,7 +81,7 @@ async def load_owned_room(session, room_id, user_id, *options):
     try:
         row = await session.scalar(query)
     except DATABASE_ERRORS as exc:
-        raise database_unavailable() from exc
+        raise database_error(exc) from exc
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"No existe una habitación con id {room_id}.")
     return row
@@ -92,7 +92,7 @@ async def _commit(session):
         await session.commit()
     except DATABASE_ERRORS as exc:
         await session.rollback()
-        raise database_unavailable() from exc
+        raise database_error(exc) from exc
 
 
 def _invalid_room(exc):
@@ -246,7 +246,7 @@ async def _catalog_for_layout(session, user_id, item_ids):
     try:
         catalog = (await session.scalars(query)).all()
     except DATABASE_ERRORS as exc:
-        raise database_unavailable() from exc
+        raise database_error(exc) from exc
     if item_ids is None and len(catalog) > MAX_LAYOUT_ITEMS:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,

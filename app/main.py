@@ -1,5 +1,4 @@
 import logging
-import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -13,7 +12,7 @@ from app.database.connection import add_missing_room_columns, add_missing_user_c
 from app.geometry.router import router as geometry_router
 from app.models.space import Base
 from app.routers import auth, chat, rooms
-from app.routers.errors import DATABASE_ERRORS
+from app.routers.errors import DATABASE_ERRORS, DatabaseFailure, describe_database_error, new_request_id
 from app.routers.spaces import MAX_PHOTO_REQUEST_BYTES, PHOTO_UPLOAD_PATH, debug_router
 from app.routers.spaces import router as spaces_router
 from app.utils.logging_config import configure_logging
@@ -40,7 +39,10 @@ async def lifespan(app):
             await add_missing_room_columns(conn)
     except DATABASE_ERRORS as exc:
         # Keep serving the endpoints that do not need the database.
-        logger.warning("Database unreachable at startup, tables were not created: %s", exc)
+        # Clase y mensaje limpios: el texto completo puede llevar SQL, parámetros o la URL.
+        logger.warning(
+            "Database unreachable at startup, tables were not created: %s: %s", *describe_database_error(exc)
+        )
     yield
     await engine.dispose()
 
@@ -83,6 +85,18 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     return JSONResponse(status_code=422, content={"detail": errors})
 
 
+@app.exception_handler(DatabaseFailure)
+async def database_failure_handler(request: Request, exc: DatabaseFailure):
+    """503 (sin conexión) o 500 (el resto) de un error de base de datos, con el request_id del log.
+
+    Mismo cuerpo que el 500 genérico. Corre dentro de CORSMiddleware, que añade las cabeceras CORS.
+    """
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "error": exc.error, "request_id": exc.request_id},
+    )
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     """Last-resort handler for errors no endpoint caught: logs the traceback and answers 500.
@@ -90,7 +104,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     The client only gets a generic message and a request_id; the exception text, which may contain
     queries, connection strings or file paths, stays in the server log under that same id.
     """
-    request_id = uuid.uuid4().hex[:12]
+    request_id = new_request_id()
     logger.exception("request_id=%s Unhandled error in %s %s", request_id, request.method, request.url.path)
     headers = {}
     # This response is built outside CORSMiddleware, so the CORS header has to be set here or the
@@ -136,6 +150,6 @@ async def database_health():
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
     except DATABASE_ERRORS as exc:
-        logger.warning("Health check could not reach the database: %s", exc)
+        logger.warning("Health check could not reach the database: %s: %s", *describe_database_error(exc))
         return JSONResponse(status_code=503, content={"status": "degraded", "database": "offline"})
     return {"status": "online", "database": "online"}

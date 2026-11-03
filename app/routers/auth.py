@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.database.connection import get_session
 from app.models.user import Usuario
-from app.routers.errors import DATABASE_ERRORS, database_unavailable
+from app.routers.errors import DATABASE_ERRORS, database_error
 from app.schemas.auth import TokenOut, UserLogin, UserOut, UserRegister
 from app.utils.rate_limit import enforce_registration_limit, login_failure_limiter, too_many_requests
 
@@ -206,7 +206,7 @@ async def register(body: UserRegister, request: Request, session: AsyncSession =
         raise email_taken from exc
     except DATABASE_ERRORS as exc:
         await session.rollback()
-        raise database_unavailable() from exc
+        raise database_error(exc) from exc
 
     return UserOut(id=user.id, nombre=user.nombre, email=user.email)
 
@@ -241,7 +241,7 @@ async def login(body: UserLogin, session: AsyncSession = Depends(get_session)):
     try:
         user = await session.scalar(select(Usuario).where(Usuario.email == body.email))
     except DATABASE_ERRORS as exc:
-        raise database_unavailable() from exc
+        raise database_error(exc) from exc
     # scrypt is CPU-bound; run it in a worker thread so other requests keep being served.
     valid = await asyncio.to_thread(
         verify_password, body.password, user.password_hash if user else _DUMMY_HASH
