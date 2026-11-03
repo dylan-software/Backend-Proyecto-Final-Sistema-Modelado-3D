@@ -163,6 +163,16 @@ lugar, `app/geometry/units.py`.
     12 m por lado y de 2 a 4 m de alto, objetos de 5 a 400 cm por lado, nombres de texto plano de
     hasta 60 caracteres, sin NaN ni infinitos y sin campos desconocidos. Un objeto inválido se descarta
     con su motivo; uno que se sale de la sala hasta 10 cm se mete dentro; se aceptan como mucho 10.
+  - Coherencia espacial (`app/geometry/arrangement.py`, determinista; los solapes ya NO se aceptan):
+    - Puertas, ventanas, espejos y cuadros (`kind="wall"`) se pegan a la pared más cercana, paralelos
+      a ella; en una pared vertical se intercambian ancho y fondo. La puerta (por su nombre: "puerta" o
+      "door") va al suelo; el resto, entre el suelo y el techo, y por encima del mueble en el que se
+      metan (el espejo sobre la cama).
+    - Los objetos de suelo se procesan de mayor a menor área. Uno pequeño (menos de 0,6 m de alto y del
+      40 % del área) con el centro dentro de otro que está en el suelo va encima (el portátil sobre la
+      cama); nunca sobre algo ya apilado. Si no, se desplaza lo mínimo a un lado del que estorba,
+      dentro de la sala, o se descarta con el motivo `"se solapa con <nombre>"`.
+    - Apoyado encima o pegado al lado no cuenta como solape. El prompt pide los nombres en español.
   - Sin migración: la sala pasa a ser el rectángulo estimado (`vertices`, `ancho`, `profundidad`,
     `alto`) y los objetos reemplazan sus muebles (centro en `posicion_x`/`posicion_z`, base en
     `posicion_y`), en una sola transacción.
