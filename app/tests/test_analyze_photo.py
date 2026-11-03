@@ -338,7 +338,8 @@ async def test_a_slow_model_is_504_and_keeps_the_room(user_a, db_sessions, model
 
 async def test_invalid_and_extra_objects_are_discarded_with_a_reason(user_a, db_sessions, model):
     room_id = await created_id(user_a)
-    many = [{**wall_frame(f"Cuadro {i}"), "x_m": 0.5 + i * 0.25} for i in range(11)]
+    # Cuadros de 30 cm separados en la pared: antes se pisaban, lo que ya no se acepta.
+    many = [{**wall_frame(f"Cuadro {i}"), "width_cm": 30, "x_m": 0.3 + i * 0.35} for i in range(11)]
     outside = {**wall_frame("Fuera"), "x_m": 5}
     model.reply = estimate_with({**wall_frame(), "name": "<b>x</b>"}, outside, *many)
 
