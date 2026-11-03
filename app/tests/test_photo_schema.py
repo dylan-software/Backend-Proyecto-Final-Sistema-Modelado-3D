@@ -219,17 +219,22 @@ def test_a_wall_object_through_the_ceiling_is_lowered_or_discarded():
     assert plan.discarded == [("Repisa", REASON_OUTSIDE)]
 
 
-def test_overlapping_objects_are_accepted():
+def test_a_small_object_inside_a_bigger_one_is_put_on_top_instead_of_overlapping():
+    # Antes los solapes se aceptaban; ahora el cojín (pequeño y bajo) queda encima del sofá.
     plan = build_photo_plan(reply([thing(), thing("Cojín", width_cm=40, depth_cm=40, height_cm=10)]))
 
-    assert len(plan.objects) == 2
+    sofa, cojin = plan.objects
+    assert cojin.elevation_m == pytest.approx(sofa.height_m)
+    assert plan.discarded == []
 
 
 # --- Topes ---------------------------------------------------------------------------------------------
 
 
 def test_only_10_objects_are_accepted():
-    plan = build_photo_plan(reply([thing(f"Objeto {i}") for i in range(12)]))
+    # Objetos pequeños y separados: antes estaban todos en el mismo sitio, lo que ya no se acepta.
+    objects = [thing(f"Objeto {i}", width_cm=20, depth_cm=20, x_m=0.2 + i * 0.3, z_m=0.5) for i in range(12)]
+    plan = build_photo_plan(reply(objects))
 
     assert [o.name for o in plan.objects] == [f"Objeto {i}" for i in range(10)]
     assert plan.discarded == [("Objeto 10", REASON_LIMIT), ("Objeto 11", REASON_LIMIT)]

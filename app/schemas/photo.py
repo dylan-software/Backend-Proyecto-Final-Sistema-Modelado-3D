@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from app.geometry.arrangement import arrange_objects
 from app.geometry.units import cm_to_m
 
 # Límites de la sección 2 del v4, en un solo lugar.
@@ -121,6 +122,8 @@ class PlacedObject:
     center_x: float
     center_z: float
     elevation_m: float
+    # "floor" o "wall": lo usa la recolocación (app.geometry.arrangement); no se guarda.
+    kind: str = "floor"
 
 
 @dataclass
@@ -153,11 +156,24 @@ def _fit_axis(center, size, side):
     return center + shift
 
 
+def _center_inside(center, side):
+    """El centro llevado a [0, side] si se sale FIT_TOLERANCE_M o menos; None si se sale más."""
+    if center < -FIT_TOLERANCE_M - EPSILON or center > side + FIT_TOLERANCE_M + EPSILON:
+        return None
+    return min(max(center, 0.0), side)
+
+
 def _place(item, room):
     """El objeto colocado dentro de la sala, o None si se sale más de FIT_TOLERANCE_M."""
     width, depth, height = cm_to_m(item.width_cm), cm_to_m(item.depth_cm), cm_to_m(item.height_cm)
-    center_x = _fit_axis(item.x_m, width, room.width_m)
-    center_z = _fit_axis(item.z_m, depth, room.length_m)
+    if item.kind == "wall":
+        # Su ancho va a lo largo de la pared, que aún no se sabe cuál es: aquí solo se exige que el
+        # centro esté dentro de la sala; arrange_objects lo pega a la pared y lo orienta.
+        center_x = _center_inside(item.x_m, room.width_m)
+        center_z = _center_inside(item.z_m, room.length_m)
+    else:
+        center_x = _fit_axis(item.x_m, width, room.width_m)
+        center_z = _fit_axis(item.z_m, depth, room.length_m)
     elevation = 0.0 if item.kind == "floor" else item.elevation_m
     # En vertical solo puede sobrar por arriba (la base nunca es negativa).
     excess = elevation + height - room.height_m
@@ -165,7 +181,7 @@ def _place(item, room):
         elevation = elevation - excess if excess <= FIT_TOLERANCE_M + EPSILON else -1.0
     if center_x is None or center_z is None or elevation < -EPSILON:
         return None
-    return PlacedObject(item.name, width, depth, height, center_x, center_z, max(elevation, 0.0))
+    return PlacedObject(item.name, width, depth, height, center_x, center_z, max(elevation, 0.0), item.kind)
 
 
 def build_photo_plan(data):
@@ -174,9 +190,12 @@ def build_photo_plan(data):
     Args:
         data: el JSON ya decodificado de la respuesta del modelo.
 
+    Los objetos aceptados (como mucho MAX_PHOTO_OBJECTS) se recolocan después con arrange_objects
+    para que no se atraviesen; los que no caben se descartan con "se solapa con <nombre>".
+
     Returns:
-        PhotoPlan con la sala, la descripción limpia, hasta MAX_PHOTO_OBJECTS objetos colocados y los
-        descartados con su motivo.
+        PhotoPlan con la sala, la descripción limpia, los objetos colocados y los descartados con su
+        motivo (primero los de la validación, luego los de la recolocación).
 
     Raises:
         EstimateError: el sobre no cumple el esquema o la sala está fuera de los límites.
@@ -201,4 +220,6 @@ def build_photo_plan(data):
             plan.discarded.append((item.name, REASON_LIMIT))
         else:
             plan.objects.append(placed)
+    plan.objects, overlapping = arrange_objects(reply.room, plan.objects)
+    plan.discarded.extend(overlapping)
     return plan
