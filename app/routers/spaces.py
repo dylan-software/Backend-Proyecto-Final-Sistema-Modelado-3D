@@ -18,7 +18,7 @@ from app.geometry.ransac_filter import clean_point_cloud
 from app.geometry.room import Room
 from app.models.space import Categoria, Habitacion, MuebleCatalogo, MuebleSugerido
 from app.routers.auth import ensure_same_user, get_current_user
-from app.routers.errors import DATABASE_ERRORS, database_unavailable
+from app.routers.errors import DATABASE_ERRORS, database_error
 from app.routers.rooms import load_owned_room, room_detail, room_item
 from app.schemas.photo import MAX_INSTRUCTIONS_LENGTH
 from app.schemas.room import AnalyzePhotoResponse, DiscardedItem
@@ -256,7 +256,7 @@ async def analyze_space(
         await session.commit()
     except DATABASE_ERRORS as exc:
         await session.rollback()
-        raise database_unavailable() from exc
+        raise database_error(exc) from exc
 
     return AnalyzeResponse(
         habitacion=RoomOut(
@@ -385,7 +385,7 @@ async def analyze_room_photo(
         await session.commit()
     except DATABASE_ERRORS as exc:
         await session.rollback()
-        raise database_unavailable() from exc
+        raise database_error(exc) from exc
 
     return AnalyzePhotoResponse(
         room=room_detail(row),
@@ -447,7 +447,7 @@ async def add_catalog_furniture(
             select(func.count()).select_from(MuebleCatalogo).where(MuebleCatalogo.user_id == owner)
         )
     except DATABASE_ERRORS as exc:
-        raise database_unavailable() from exc
+        raise database_error(exc) from exc
     if stored >= limit:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -477,7 +477,7 @@ async def add_catalog_furniture(
         await session.commit()
     except DATABASE_ERRORS as exc:
         await session.rollback()
-        raise database_unavailable() from exc
+        raise database_error(exc) from exc
 
     return CatalogFurnitureOut(
         id=item.id,
@@ -512,7 +512,7 @@ async def delete_catalog_furniture(
     try:
         furniture = await session.scalar(query)
     except DATABASE_ERRORS as exc:
-        raise database_unavailable() from exc
+        raise database_error(exc) from exc
     if furniture is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"No existe un mueble con id {furniture_id}.")
     try:
@@ -520,7 +520,7 @@ async def delete_catalog_furniture(
         await session.commit()
     except DATABASE_ERRORS as exc:
         await session.rollback()
-        raise database_unavailable() from exc
+        raise database_error(exc) from exc
     return {"success": True, "message": "Furniture item successfully removed"}
 
 
@@ -557,7 +557,7 @@ async def list_user_spaces(
         rooms = (await session.scalars(rooms_query)).all()
         catalog = (await session.scalars(catalog_query)).all()
     except DATABASE_ERRORS as exc:
-        raise database_unavailable() from exc
+        raise database_error(exc) from exc
     return UserSpacesOut(
         user_id=user_id,
         habitaciones=[SpaceOut.model_validate(room, from_attributes=True) for room in rooms],
