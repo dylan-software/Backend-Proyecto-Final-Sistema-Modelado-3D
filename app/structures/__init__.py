@@ -6,5 +6,15 @@ opcional y una función check_invariants() que las pruebas llaman tras cada oper
 from app.structures.doubly_linked_list import DoublyLinkedList, DoublyNode
 from app.structures.exceptions import CapacityError, InvariantError
 from app.structures.linked_queue import LinkedQueue, QueueNode
+from app.structures.linked_stack import LinkedStack, StackNode
 
-__all__ = ["CapacityError", "DoublyLinkedList", "DoublyNode", "InvariantError", "LinkedQueue", "QueueNode"]
+__all__ = [
+    "CapacityError",
+    "DoublyLinkedList",
+    "DoublyNode",
+    "InvariantError",
+    "LinkedQueue",
+    "LinkedStack",
+    "QueueNode",
+    "StackNode",
+]
