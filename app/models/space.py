@@ -1,10 +1,52 @@
-from sqlalchemy import JSON, Float, ForeignKey, Index, Integer, String, func
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+# Máximo de caracteres de las descripciones de grupos y proyectos (migración 005).
+MAX_DESCRIPTION_LENGTH = 1000
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class ProjectGroup(Base):
+    """Carpeta de proyectos (salas) de una cuenta, con una descripción libre (migración 005)."""
+
+    __tablename__ = "grupos_proyecto"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True)
+    name: Mapped[str] = mapped_column("nombre", String(80))
+    description: Mapped[str | None] = mapped_column("descripcion", Text, nullable=True)
+    # Se rellena también en Python para poder devolverlo justo después de crear el grupo.
+    created_at: Mapped[datetime] = mapped_column(
+        "creado_en",
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+    # Mismo nombre que en schema.sql y la migración 005. length() en vez de char_length() porque SQLite
+    # (las pruebas) no tiene char_length; en PostgreSQL ambas cuentan caracteres.
+    __table_args__ = (
+        CheckConstraint(
+            f"length(descripcion) <= {MAX_DESCRIPTION_LENGTH}", name="ck_grupos_proyecto_descripcion_len"
+        ),
+    )
 
 
 class Habitacion(Base):
@@ -21,9 +63,24 @@ class Habitacion(Base):
     profundidad: Mapped[float] = mapped_column(Float)
     # Floor polygon as [{"x": float, "y": float}, ...] in meters; the polygon's y is the room's z axis.
     vertices: Mapped[list | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)
+    # Grupo del proyecto (NULL = sin grupo) y su descripción (migración 005).
+    group_id: Mapped[int | None] = mapped_column(
+        "grupo_id", ForeignKey("grupos_proyecto.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    description: Mapped[str | None] = mapped_column("descripcion", Text, nullable=True)
+    # RESERVADO para la versión derivada: ningún endpoint lo lee ni lo escribe todavía.
+    derived_from: Mapped[int | None] = mapped_column(
+        "derivado_de", ForeignKey("habitaciones.id", ondelete="SET NULL"), nullable=True
+    )
 
     muebles: Mapped[list["MuebleSugerido"]] = relationship(
         back_populates="habitacion", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            f"length(descripcion) <= {MAX_DESCRIPTION_LENGTH}", name="ck_habitaciones_descripcion_len"
+        ),
     )
 
 
