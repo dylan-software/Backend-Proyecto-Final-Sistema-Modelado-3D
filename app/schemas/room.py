@@ -3,8 +3,10 @@
 Coordinates are meters. A vertex's y is the room's z axis (depth), as in app.geometry.room.
 """
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
+
+from app.schemas.text import MAX_PROJECT_NAME_LENGTH, optional_description, plain_name
 
 # Sanity limits: far beyond any real room, small enough to keep the geometry checks cheap.
 MAX_COORDINATE_M = 1000
@@ -28,6 +30,9 @@ class RoomCreate(CamelModel):
     name: str = Field(min_length=1, max_length=120)
     vertices: list[Vertex] = Field(min_length=3, max_length=MAX_VERTICES)
     height_m: float = Field(gt=0, le=MAX_HEIGHT_M, allow_inf_nan=False)
+    # Grupo del proyecto (null = sin grupo) y su descripción (CONTRATO-GRUPOS.md).
+    group_id: int | None = Field(None, gt=0)
+    description: str | None = None
 
     @field_validator("name", mode="before")
     @classmethod
@@ -35,9 +40,43 @@ class RoomCreate(CamelModel):
         # Runs before min_length, so a name made only of spaces is rejected instead of stored empty.
         return value.strip() if isinstance(value, str) else value
 
+    @field_validator("description", mode="before")
+    @classmethod
+    def check_description(cls, value):
+        return optional_description(value)
+
+
+class RoomUpdate(CamelModel):
+    """PATCH /rooms/{id}: al menos un campo. groupId null saca el proyecto de su grupo; description null o
+    "" borra la descripción. No toca vértices, altura ni muebles."""
+
+    name: str | None = None
+    description: str | None = None
+    group_id: int | None = Field(None, gt=0)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def check_name(cls, value):
+        return plain_name(value, MAX_PROJECT_NAME_LENGTH)
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def check_description(cls, value):
+        return optional_description(value)
+
+    @model_validator(mode="after")
+    def at_least_one_field(self):
+        if not self.model_fields_set:
+            raise ValueError("indica al menos un campo: name, description o groupId")
+        return self
+
 
 class VertexInsert(Vertex):
     after_index: int = Field(ge=0)
+
+
+def _is_none(value):
+    return value is None
 
 
 class RoomDetail(CamelModel):
@@ -46,6 +85,9 @@ class RoomDetail(CamelModel):
     vertices: list[Vertex]
     height_m: float
     area_m2: float
+    # Solo aparecen cuando tienen valor: el cliente trata "ausente" como null (PREGUNTAS.md, 1).
+    description: str | None = Field(None, exclude_if=_is_none)
+    group_id: int | None = Field(None, exclude_if=_is_none)
 
 
 class RoomItem(CamelModel):
