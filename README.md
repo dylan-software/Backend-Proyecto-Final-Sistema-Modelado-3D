@@ -73,6 +73,7 @@ de esta carpeta.
 | `ALLOWED_ORIGINS` | Orígenes permitidos por CORS, separados por comas (por defecto `http://localhost:3000`). |
 | `ENABLE_DEBUG_ROUTES` | `true` registra `GET /api/v1/spaces/debug-vars`. Apagado por defecto; no definirla en producción. |
 | `MAX_CATALOG_ITEMS_PER_USER` | Máximo de muebles en el catálogo de una cuenta (300 por defecto). Al llegar, `POST /catalog` responde 409 sin llamar al modelo. |
+| `MAX_GROUPS_PER_USER` | Máximo de grupos de proyectos de una cuenta (50 por defecto). Al llegar, `POST /groups` responde 409. |
 | `AI_REQUESTS_PER_MINUTE`, `AI_REQUESTS_PER_DAY` | Llamadas a la IA por cuenta (10 por minuto y 200 por día por defecto), sumando chat, catálogo, `/analyze` y `analyze-photo` (cada foto cuenta como 3). Más allá, 429 con `Retry-After`. |
 | `LOGIN_FAILURES_PER_EMAIL`, `LOGIN_FAILURE_WINDOW_MINUTES` | Intentos fallidos de login por email (10 en 15 minutos por defecto). Más allá, 429 con `Retry-After`. |
 | `REGISTRATIONS_PER_HOUR`, `REGISTRATIONS_PER_IP_PER_HOUR` | Registros por hora en total (20) y por IP de cliente (5, de mejor esfuerzo). Más allá, 429 con `Retry-After`. |
@@ -90,8 +91,12 @@ responden 404, igual que los inexistentes. `/`, `/api/v1/health` y `/api/v1/auth
 |---|---|---|
 | GET | `/` | Estado del servidor. |
 | POST | `/api/v1/spaces/analyze` | Pipeline completo: RANSAC → OmniRoute → colisiones → PostgreSQL. |
-| POST | `/api/v1/spaces/rooms` | Crea una sala poligonal: `{name, vertices: [{x, y}], heightM}` → 201 `{id, name, vertices, heightM, areaM2}`. |
+| POST | `/api/v1/spaces/rooms` | Crea una sala poligonal: `{name, vertices: [{x, y}], heightM, groupId?, description?}` → 201 `{id, name, vertices, heightM, areaM2}` (más `groupId` y `description` si tienen valor). 404 si `groupId` es de otra cuenta. |
 | GET | `/api/v1/spaces/rooms/{id}` | La sala; las creadas por `/analyze` vuelven como su rectángulo. |
+| PATCH | `/api/v1/spaces/rooms/{id}` | Renombra, describe o mueve de grupo un proyecto: `{name?, description?, groupId?}` (al menos uno; `groupId: null` lo deja sin grupo; `description` `null` o `""` la borra). No toca forma, altura ni muebles. |
+| GET | `/api/v1/spaces/groups` | Grupos de la cuenta, del más antiguo al más nuevo: `{groups: [{id, name, description, createdAt, projectCount}]}`. |
+| POST | `/api/v1/spaces/groups` | Crea un grupo: `{name, description?}` → 201. 409 al llegar a `MAX_GROUPS_PER_USER`. |
+| PATCH | `/api/v1/spaces/groups/{id}` | Cambia `name` o `description` (al menos uno; `description` `null` o `""` la borra). |
 | PATCH | `/api/v1/spaces/rooms/{id}/vertices/{index}` | Mueve un vértice: `{x, y}`. 422 si el polígono queda inválido (la sala no cambia). |
 | POST | `/api/v1/spaces/rooms/{id}/vertices` | Inserta un vértice: `{afterIndex, x, y}`. |
 | DELETE | `/api/v1/spaces/rooms/{id}/vertices/{index}` | Elimina un vértice; una sala conserva al menos 3. |
@@ -112,6 +117,14 @@ Campos opcionales: `instrucciones`, `ancho`/`alto`/`profundidad` (si ya se conoc
 `imagen`, una foto de la habitación en base64 o como *data URL*. Con la foto, OpenCV calcula el
 brillo y los colores dominantes, que se envían a OmniRoute para que la propuesta armonice con la
 habitación y se devuelven en `contexto_visual`.
+
+Grupos de proyectos (migración 005 del repo database; el backend la aplica al arrancar en PostgreSQL,
+RLS de `grupos_proyecto` incluido): un grupo es una carpeta de proyectos con una descripción libre, y cada
+proyecto (sala) puede tener grupo y descripción. Nombres en texto plano sin espacios en los extremos (1-80
+caracteres el grupo, 1-120 el proyecto; sin `<`, `>` ni caracteres de control); descripciones de hasta 1000
+caracteres, con saltos de línea y tabuladores; vacías se guardan como `null`. Los 422 no repiten la
+entrada, lo ajeno responde 404 y nada de esto gasta cuota de IA. `GET /api/v1/spaces` añade `group_id` y
+`description` a cada sala. No hay borrado de grupos todavía; `habitaciones.derivado_de` está reservado.
 
 Convención de coordenadas: metros, eje **y hacia arriba**. La habitación ocupa
 `[0, ancho] × [0, alto] × [0, profundidad]`; el origen es la esquina mínima de las superficies
