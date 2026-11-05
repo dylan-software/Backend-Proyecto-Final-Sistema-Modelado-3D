@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     enable_debug_routes: bool = False
     # Most catalog pieces one account may store; POST /catalog answers 409 beyond it, before calling AI.
     max_catalog_items_per_user: int = Field(300, gt=0)
+    # Máximo de grupos de proyectos por cuenta; POST /groups responde 409 al llegar.
+    max_groups_per_user: int = Field(50, gt=0)
     # Calls to the AI model (chat, catalog, analyze, analyze-photo) per account; 429 beyond them.
     ai_requests_per_minute: int = Field(10, gt=0)
     ai_requests_per_day: int = Field(200, gt=0)
