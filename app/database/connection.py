@@ -84,3 +84,32 @@ async def add_missing_room_columns(conn):
     if conn.dialect.name != "postgresql":
         return
     await conn.execute(text("ALTER TABLE habitaciones ADD COLUMN IF NOT EXISTS vertices JSONB"))
+
+
+# Migración 005 (grupos de proyectos), en el mismo orden y con el mismo SQL que el repo database.
+PROJECT_GROUP_STATEMENTS = (
+    "ALTER TABLE habitaciones ADD COLUMN IF NOT EXISTS grupo_id INTEGER "
+    "REFERENCES grupos_proyecto (id) ON DELETE SET NULL",
+    "ALTER TABLE habitaciones ADD COLUMN IF NOT EXISTS descripcion TEXT "
+    "CONSTRAINT ck_habitaciones_descripcion_len CHECK (char_length(descripcion) <= 1000)",
+    "ALTER TABLE habitaciones ADD COLUMN IF NOT EXISTS derivado_de INTEGER "
+    "REFERENCES habitaciones (id) ON DELETE SET NULL",
+    "CREATE INDEX IF NOT EXISTS ix_habitaciones_grupo_id ON habitaciones (grupo_id)",
+    "CREATE INDEX IF NOT EXISTS ix_grupos_proyecto_user_id ON grupos_proyecto (user_id)",
+    # La API REST de Supabase expone todo "public": RLS sin políticas la cierra. El backend es dueño de
+    # la tabla y se salta el RLS, así que no le afecta. ENABLE es idempotente.
+    "ALTER TABLE grupos_proyecto ENABLE ROW LEVEL SECURITY",
+)
+
+
+async def add_project_group_columns(conn):
+    """Columnas de grupos en habitaciones, sus índices y el RLS de grupos_proyecto (migración 005).
+
+    create_all ya creó grupos_proyecto (con su CHECK), pero no altera habitaciones si ya existía.
+    Todas las sentencias son no-ops si ya se aplicaron. Solo en PostgreSQL: en SQLite (las pruebas)
+    create_all ya lo crea todo y no hay RLS.
+    """
+    if conn.dialect.name != "postgresql":
+        return
+    for statement in PROJECT_GROUP_STATEMENTS:
+        await conn.execute(text(statement))

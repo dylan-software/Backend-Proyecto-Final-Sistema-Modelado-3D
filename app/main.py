@@ -8,7 +8,12 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.config import get_settings
-from app.database.connection import add_missing_room_columns, add_missing_user_columns, engine
+from app.database.connection import (
+    add_missing_room_columns,
+    add_missing_user_columns,
+    add_project_group_columns,
+    engine,
+)
 from app.geometry.router import router as geometry_router
 from app.models.space import Base
 from app.routers import auth, chat, rooms
@@ -37,6 +42,7 @@ async def lifespan(app):
             await conn.run_sync(Base.metadata.create_all)
             await add_missing_user_columns(conn)
             await add_missing_room_columns(conn)
+            await add_project_group_columns(conn)
     except DATABASE_ERRORS as exc:
         # Keep serving the endpoints that do not need the database.
         # Clase y mensaje limpios: el texto completo puede llevar SQL, parámetros o la URL.
