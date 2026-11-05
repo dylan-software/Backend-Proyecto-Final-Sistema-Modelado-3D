@@ -19,6 +19,7 @@ from app.geometry.units import cm_to_m
 from app.models.space import Habitacion, MuebleCatalogo, MuebleSugerido
 from app.routers.auth import get_current_user
 from app.routers.errors import DATABASE_ERRORS, database_error
+from app.routers.groups import load_owned_group
 from app.schemas.room import (
     MAX_LAYOUT_ITEMS,
     LayoutRequest,
@@ -27,6 +28,7 @@ from app.schemas.room import (
     RoomDetail,
     RoomItem,
     RoomItemsOut,
+    RoomUpdate,
     Vertex,
     VertexInsert,
 )
@@ -46,6 +48,8 @@ def room_detail(row):
         vertices=geometry.vertices_json(),
         height_m=geometry.height_m,
         area_m2=round(geometry.area_m2(), 2),
+        description=row.description,
+        group_id=row.group_id,
     )
 
 
@@ -123,19 +127,58 @@ async def create_room(
 ):
     """Store a room drawn as a polygon (at least 3 vertices, meters) with its ceiling height.
 
+    Optionally inside one of the account's groups (groupId) and with a description.
+
     Returns:
         201 with the room, its vertices and its floor area.
 
     Raises:
-        HTTPException: 401 no valid session, 422 the polygon is invalid (too small, self-intersecting,
-            ...), 503 database failure.
+        HTTPException: 401 no valid session, 404 groupId of another account or missing, 422 the polygon
+            is invalid (too small, self-intersecting, ...), 503 database failure.
     """
     try:
         geometry = Room([(v.x, v.y) for v in body.vertices], body.height_m)
     except RoomError as exc:
         raise _invalid_room(exc) from exc
-    row = Habitacion(user_id=current_user, nombre=body.name, **geometry.to_record())
+    if body.group_id is not None:
+        await load_owned_group(session, body.group_id, current_user)
+    row = Habitacion(
+        user_id=current_user,
+        nombre=body.name,
+        group_id=body.group_id,
+        description=body.description,
+        **geometry.to_record(),
+    )
     session.add(row)
+    await _commit(session)
+    return room_detail(row)
+
+
+@router.patch("/{room_id}", response_model=RoomDetail)
+async def update_room(
+    body: RoomUpdate,
+    room_id: int = RoomId,
+    session: AsyncSession = Depends(get_session),
+    current_user: str = Depends(get_current_user),
+):
+    """Renombra un proyecto, cambia su descripción o lo mueve de grupo (groupId null = sin grupo).
+
+    No toca la forma, la altura ni los muebles.
+
+    Raises:
+        HTTPException: 401 sin sesión válida, 404 sala o groupId ajenos o inexistentes, 422 cuerpo vacío o
+            campos inválidos, 503/500 fallo de base de datos.
+    """
+    row = await load_owned_room(session, room_id, current_user)
+    fields = body.model_fields_set
+    if "group_id" in fields and body.group_id is not None:
+        await load_owned_group(session, body.group_id, current_user)
+    if "name" in fields:
+        row.nombre = body.name
+    if "description" in fields:
+        row.description = body.description
+    if "group_id" in fields:
+        row.group_id = body.group_id
     await _commit(session)
     return room_detail(row)
 

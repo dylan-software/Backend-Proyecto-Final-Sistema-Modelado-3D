@@ -105,6 +105,9 @@ class CatalogFurnitureOut(BaseModel):
 
 class SpaceOut(RoomOut):
     muebles: list[FurnitureOut]
+    # Grupo del proyecto (null = sin grupo) y su descripción (CONTRATO-GRUPOS.md); siempre presentes.
+    group_id: int | None = None
+    description: str | None = None
 
 
 class CatalogItemOut(BaseModel):
