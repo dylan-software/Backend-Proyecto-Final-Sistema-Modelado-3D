@@ -9,12 +9,12 @@ each allow the full limit.
 import math
 import threading
 import time
-from collections import deque
 from functools import lru_cache
 
 from fastapi import HTTPException, status
 
 from app.config import get_settings
+from app.structures import LinkedQueue
 
 MINUTE = 60
 HOUR = 60 * MINUTE
@@ -34,15 +34,17 @@ class RateLimiter:
         self._limits = [(limit, window) for limit, window in limits if limit > 0]
         self._longest = max((window for _, window in self._limits), default=0)
         self._clock = clock
-        self._events = {}  # key -> deque of timestamps, oldest first
+        # clave -> LinkedQueue de marcas de tiempo: la más antigua al frente, la última al final.
+        self._events = {}
         self._lock = threading.Lock()
 
     def _recent(self, key, now):
         events = self._events.get(key)
         if events is None:
             return None
-        while events and events[0] <= now - self._longest:
-            events.popleft()
+        # Saca por el frente (O(1) cada una) las marcas que ya salieron de la ventana más larga.
+        while events and events.peek() <= now - self._longest:
+            events.dequeue()
         if not events:
             del self._events[key]
             return None
@@ -76,7 +78,11 @@ class RateLimiter:
             now = self._clock()
             if key not in self._events and len(self._events) >= MAX_KEYS:
                 self._forget_idle(now)
-            self._events.setdefault(key, deque()).extend([now] * cost)
+            events = self._events.get(key)
+            if events is None:
+                events = self._events[key] = LinkedQueue()
+            for _ in range(cost):
+                events.enqueue(now)  # O(1) cada una, por el final
 
     def reset(self, key):
         with self._lock:
