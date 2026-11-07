@@ -6,6 +6,7 @@ La excepción es FixedArray: un arreglo estático que usa una list preasignada d
 una sola vez al crearlo y nunca crece ni encoge) y comprueba los límites de cada índice.
 """
 
+from app.structures.circular_doubly_linked_list import CircularDoublyLinkedList, RingNode
 from app.structures.doubly_linked_list import DoublyLinkedList, DoublyNode
 from app.structures.exceptions import CapacityError, InvariantError
 from app.structures.fixed_array import FixedArray
@@ -14,6 +15,7 @@ from app.structures.linked_stack import LinkedStack, StackNode
 
 __all__ = [
     "CapacityError",
+    "CircularDoublyLinkedList",
     "DoublyLinkedList",
     "DoublyNode",
     "FixedArray",
@@ -21,5 +23,6 @@ __all__ = [
     "LinkedQueue",
     "LinkedStack",
     "QueueNode",
+    "RingNode",
     "StackNode",
 ]
