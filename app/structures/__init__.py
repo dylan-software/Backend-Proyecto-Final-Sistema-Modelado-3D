@@ -12,6 +12,7 @@ from app.structures.exceptions import CapacityError, InvariantError
 from app.structures.fixed_array import FixedArray
 from app.structures.linked_queue import LinkedQueue, QueueNode
 from app.structures.linked_stack import LinkedStack, StackNode
+from app.structures.lru_cache import LruCache
 
 __all__ = [
     "CapacityError",
@@ -22,6 +23,7 @@ __all__ = [
     "InvariantError",
     "LinkedQueue",
     "LinkedStack",
+    "LruCache",
     "QueueNode",
     "RingNode",
     "StackNode",
