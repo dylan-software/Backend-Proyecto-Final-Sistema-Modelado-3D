@@ -73,6 +73,7 @@ de esta carpeta.
 | `ALLOWED_ORIGINS` | Orígenes permitidos por CORS, separados por comas (por defecto `http://localhost:3000`). |
 | `ENABLE_DEBUG_ROUTES` | `true` registra `GET /api/v1/spaces/debug-vars`. Apagado por defecto; no definirla en producción. |
 | `MAX_CATALOG_ITEMS_PER_USER` | Máximo de muebles en el catálogo de una cuenta (300 por defecto). Al llegar, `POST /catalog` responde 409 sin llamar al modelo. |
+| `COHERENCE_CACHE_SIZE` | Nombres de mueble cuya respuesta del validador de coherencia se recuerda en memoria (1000 por defecto; caché LRU). Repetir un nombre en `POST /catalog` no vuelve a llamar al modelo. Se pierde al reiniciar. |
 | `MAX_GROUPS_PER_USER` | Máximo de grupos de proyectos de una cuenta (50 por defecto). Al llegar, `POST /groups` responde 409. |
 | `AI_REQUESTS_PER_MINUTE`, `AI_REQUESTS_PER_DAY` | Llamadas a la IA por cuenta (10 por minuto y 200 por día por defecto), sumando chat, catálogo, `/analyze` y `analyze-photo` (cada foto cuenta como 3). Más allá, 429 con `Retry-After`. |
 | `LOGIN_FAILURES_PER_EMAIL`, `LOGIN_FAILURE_WINDOW_MINUTES` | Intentos fallidos de login por email (10 en 15 minutos por defecto). Más allá, 429 con `Retry-After`. |

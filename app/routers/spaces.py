@@ -37,7 +37,7 @@ from app.schemas.space import (
 )
 from app.services.omniroute import OmniRouteError, suggest_layout
 from app.services.photo_estimator import PhotoEstimateError, PhotoEstimateTimeout, estimate_room_from_photo
-from app.services.semantic_filter import validate_furniture_coherence
+from app.services.semantic_filter import cached_furniture_coherence
 from app.utils.helpers import ImageDecodeError, decode_image, load_image_matrix, summarize_image
 from app.utils.rate_limit import enforce_ai_quota
 
@@ -78,8 +78,11 @@ def get_photo_estimator():
 
 
 def get_coherence_validator():
-    """FastAPI dependency returning the furniture name validator; tests override it with a fake."""
-    return validate_furniture_coherence
+    """Dependencia de FastAPI que devuelve el validador de nombres de mueble; las pruebas lo sustituyen.
+
+    Es el validador con caché LRU: un nombre ya validado (normalizado) no vuelve a llamar al modelo.
+    """
+    return cached_furniture_coherence
 
 
 def _furniture_box(item):
@@ -428,6 +431,8 @@ async def add_catalog_furniture(
     With categoria "Others" the category is the one typed in custom_category; it is created the first
     time and reused afterwards. Before anything is stored, OmniRoute checks that the name is a
     plausible piece of furniture or room accessory.
+    La respuesta se guarda en una caché LRU (get_coherence_validator): repetir un nombre no vuelve a
+    llamar al modelo, aunque sigue contando en la cuota de IA como antes.
 
     Returns:
         201 with the stored item, its category and whether that category was just created.
