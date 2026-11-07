@@ -194,3 +194,15 @@ class AnalyzePhotoResponse(CamelModel):
     description: str
     items: list[RoomItem]
     discarded: list[DiscardedItem]
+
+
+class PhotoUndoResponse(CamelModel):
+    """Resultado de POST /rooms/{id}/photo-undo: la sala y los muebles de antes de la última foto.
+
+    room e items tienen la misma forma que en analyze-photo; remaining dice cuántas fotos más se
+    pueden deshacer. Contrato: CONTRATO-DESHACER-FOTO.md.
+    """
+
+    room: RoomDetail
+    items: list[RoomItem]
+    remaining: int
