@@ -37,7 +37,7 @@ app/
 ├── services/omniroute.py   cliente de OmniRoute
 ├── services/scene_assistant.py  contexto y prompt del chat sobre una sala
 ├── utils/                  tipos compartidos, ayudas de imagen, logs (logging_config) y middlewares
-├── routers/spaces.py       POST /analyze, catálogo, listado y POST /rooms/{id}/analyze-photo
+├── routers/spaces.py       POST /analyze, catálogo, listado, POST /rooms/{id}/analyze-photo y /photo-undo
 ├── routers/rooms.py        salas poligonales editables, sus muebles y el layout
 ├── routers/chat.py         POST /api/v1/chat
 └── tests/                  pruebas unitarias y de integración
@@ -104,6 +104,7 @@ responden 404, igual que los inexistentes. `/`, `/api/v1/health` y `/api/v1/auth
 | GET | `/api/v1/spaces/rooms/{id}/items` | Muebles colocados: `{items: [{id, name, x, y, rotation, widthM, depthM, heightM, elevationM}]}`. |
 | POST | `/api/v1/spaces/rooms/{id}/layout` | Distribuye el catálogo dentro del polígono real (sin IA) y guarda el resultado. |
 | POST | `/api/v1/spaces/rooms/{id}/analyze-photo` | Multipart (`file`, `confirm_replace`, `instrucciones`): la IA con visión estima la sala y hasta 10 objetos, que reemplazan la forma y los muebles de la sala. |
+| POST | `/api/v1/spaces/rooms/{id}/photo-undo` | Sin cuerpo: devuelve la sala a como estaba antes de su última foto → `{room, items, remaining}`. 409 si no hay nada que deshacer. |
 | POST | `/api/v1/chat` | Chat sobre una sala: `{roomId, messages}` → `{role: "assistant", content}`. |
 | POST | `/geometry/point-cloud` | Solo el filtro RANSAC sobre una nube de puntos. |
 | POST | `/geometry/collision` | Solo la validación de colisiones de una caja. |
@@ -200,12 +201,32 @@ lugar, `app/geometry/units.py`.
     cambia.
   - FastAPI parsea el multipart antes de autenticar, así que `BodySizeLimitMiddleware` rechaza con 413
     un cuerpo de más de 5 MB + 64 KB antes de parsearlo, haya `Content-Length` o venga en chunks.
+- **Deshacer la foto.** `POST /rooms/{id}/photo-undo`, sin cuerpo. Contrato completo en
+  `CONTRATO-DESHACER-FOTO.md`, en la carpeta que contiene los tres repos.
+  - Antes de aplicar una foto se copia lo que va a sobrescribir (`vertices`, también si es `null`,
+    `ancho`, `profundidad`, `alto` y los muebles con sus medidas y su centro). La copia se apila solo
+    si el guardado de la foto sale bien: una foto con 409, 413, 415, 422, 429, 502, 503 o 504 no deja
+    nada que deshacer.
+  - `app/services/photo_undo.py`: una `LinkedStack` de capacidad 5 por sala (con la pila llena se
+    descarta la copia más antigua, pasando las demás por una pila auxiliar) dentro de una `LruCache`
+    de 200 salas con clave `(cuenta, sala)`.
+  - Respuesta 200: `{room, items, remaining}`, con `room` e `items` como en `analyze-photo`;
+    `remaining` es cuántas fotos más se pueden deshacer. Errores: 401; 404 sala inexistente o ajena
+    (antes de mirar la pila); **409** si no queda ninguna foto que deshacer; 503/500 si falla la base
+    de datos, y entonces la copia vuelve a la pila.
+  - No llama a la IA ni gasta cuota: funciona aunque la cuota esté agotada. No hay Rehacer: repetir
+    una foto deshecha vuelve a costar 3 llamadas.
+  - Deshacer vuelve exactamente al estado de antes de la foto. Dos fotos simultáneas en la misma sala
+    guardan el mismo estado previo.
+  - **El historial vive en memoria**, como los límites de peticiones: se pierde si Render reinicia el
+    servidor (entonces responde 409 explicándolo) y necesita un único worker de uvicorn.
 
 ## Límites de peticiones
 
 Los contadores viven en memoria (`app/utils/rate_limit.py`, ventanas deslizantes, sin dependencias):
 se pierden al reiniciar y no se comparten entre procesos. La imagen Docker arranca un único worker de
-uvicorn en una instancia de Render; con varios workers, cada uno permitiría el límite completo.
+uvicorn en una instancia de Render; con varios workers, cada uno permitiría el límite completo. El
+historial de Deshacer de la foto también vive en memoria con la misma condición.
 Superar un límite responde 429 con la cabecera `Retry-After` en segundos. CORS la expone
 (`expose_headers`), así que el frontend puede leerla desde otro dominio y decir cuánto esperar.
 
