@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     max_catalog_items_per_user: int = Field(300, gt=0)
     # Máximo de grupos de proyectos por cuenta; POST /groups responde 409 al llegar.
     max_groups_per_user: int = Field(50, gt=0)
+    # Nombres de mueble cuya respuesta del validador de coherencia se recuerda (LRU, en memoria).
+    coherence_cache_size: int = Field(1000, gt=0)
     # Calls to the AI model (chat, catalog, analyze, analyze-photo) per account; 429 beyond them.
     ai_requests_per_minute: int = Field(10, gt=0)
     ai_requests_per_day: int = Field(200, gt=0)

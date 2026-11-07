@@ -2,10 +2,21 @@
 
 import json
 import re
+import unicodedata
+from functools import lru_cache
 
+from app.config import get_settings
 from app.services.omniroute import OmniRouteError, chat_completion
+from app.structures import LruCache
 
-__all__ = ["OmniRouteError", "parse_coherence_reply", "validate_furniture_coherence"]
+__all__ = [
+    "OmniRouteError",
+    "cached_furniture_coherence",
+    "coherence_cache_key",
+    "get_coherence_cache",
+    "parse_coherence_reply",
+    "validate_furniture_coherence",
+]
 
 COHERENCE_PROMPT = (
     "Eres un validador de catálogo de mobiliario. El mensaje del usuario contiene únicamente un término "
@@ -53,3 +64,43 @@ async def validate_furniture_coherence(nombre):
         temperature=0,
     )
     return parse_coherence_reply(reply)
+
+
+@lru_cache
+def get_coherence_cache():
+    """LruCache compartida por todo el proceso: nombre normalizado -> True/False.
+
+    Su capacidad es COHERENCE_CACHE_SIZE (1000 por defecto), leída al crearla. Vive en memoria: se
+    pierde al reiniciar el servidor y no se comparte entre instancias. Las pruebas la reinician con
+    get_coherence_cache.cache_clear().
+    """
+    return LruCache(get_settings().coherence_cache_size)
+
+
+def coherence_cache_key(nombre):
+    """Clave de la caché: Unicode NFC, sin espacios sobrantes y en minúsculas.
+
+    "  Silla   ROJA " y "silla roja" comparten clave. Las tildes se conservan ("año" no es "ano").
+    """
+    return " ".join(unicodedata.normalize("NFC", nombre).split()).casefold()
+
+
+async def cached_furniture_coherence(nombre):
+    """validate_furniture_coherence con una caché LRU delante.
+
+    Si el nombre normalizado ya tiene respuesta, se devuelve sin llamar al modelo. Si no, se pregunta
+    al modelo y se guarda solo su True/False: un error (OmniRouteError) se propaga y no se guarda, así
+    que el siguiente intento vuelve a llamar al modelo.
+
+    Raises:
+        OmniRouteError: igual que validate_furniture_coherence, solo cuando no hay respuesta guardada.
+    """
+    cache = get_coherence_cache()
+    key = coherence_cache_key(nombre)
+    known = cache.get(key)
+    if known is not None:
+        return known
+    coherent = await validate_furniture_coherence(nombre)
+    if isinstance(coherent, bool):
+        cache.put(key, coherent)
+    return coherent
