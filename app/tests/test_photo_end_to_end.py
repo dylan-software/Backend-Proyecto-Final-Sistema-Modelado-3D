@@ -103,6 +103,28 @@ async def test_the_capture_scene_reaches_the_frontend_without_collisions(user_a,
     print("CAPTURE_DISCARDED", json.dumps(posted["discarded"], ensure_ascii=False))
 
 
+async def test_the_wall_furniture_scene_reaches_the_frontend_against_the_walls(user_a, db_sessions, model):  # noqa: F811
+    """FASE 4: cama, tocador, armario y puerta (la escena de app/tests/test_arrangement_walls.py)."""
+    room = {"width_m": 4.0, "length_m": 3.0, "height_m": 2.5}
+    objects = [
+        estimated("Cama", "floor", (140, 190, 50), (1.2, 1.1)),
+        estimated("Tocador", "floor", (45, 100, 80), (0.35, 2.2)),
+        estimated("Armario", "floor", (100, 60, 200), (3.3, 0.32)),
+        estimated("Puerta", "wall", (90, 5, 200), (3.45, 0.02)),
+    ]
+
+    posted, listed = await analyze_and_list(user_a, model, room, objects)
+
+    assert posted["discarded"] == []
+    assert collisions(listed) == []
+    assert outside(listed, room) == []
+    corners = {item["name"]: (item["x"], item["y"]) for item in listed}
+    assert corners["Cama"] == (pytest.approx(0.5), pytest.approx(0.0))  # cabecero contra el fondo
+    assert corners["Tocador"] == (pytest.approx(0.0), pytest.approx(1.7))  # contra la pared izquierda
+    assert corners["Armario"] == (pytest.approx(1.99), pytest.approx(0.0))  # junto a la puerta, no delante
+    assert corners["Puerta"] == (pytest.approx(3.0), pytest.approx(0.0))
+
+
 def random_scene(rng):
     """Una sala y de 4 a 10 objetos amontonados, como podría devolverlos el modelo."""
     room = {

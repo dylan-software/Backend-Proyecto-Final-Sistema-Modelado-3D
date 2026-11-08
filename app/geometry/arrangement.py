@@ -6,9 +6,16 @@ ni IA; mismo resultado con la misma entrada) en una sala rectangular [0, W] x [0
 1. Puertas, ventanas, espejos y cuadros (kind="wall") se pegan a la pared más cercana, paralelos a
    ella. En una pared vertical (x = 0 o x = W) se intercambian ancho y fondo. La puerta va al suelo;
    el resto se acota entre 0 y la altura de la sala.
+   Quedan a 0 cm de la pared (su cara trasera sobre ella, sin atravesarla) y dentro de su tramo.
 2. Los objetos de suelo se procesan de mayor a menor área. Uno pequeño (menos de 0,6 m de alto y
    menos del 40 % del área) con el centro dentro de otro de suelo se coloca ENCIMA; si no, se desplaza
    lo mínimo a un lado del que estorba, dentro de la sala. Si no cabe, se descarta.
+   Los muebles que van contra una pared (armario, cama, tocador, escritorio, estante; por su nombre) a
+   menos de WALL_SNAP_DISTANCE_M de la pared más cercana se arriman a ella (la cama, por el cabecero:
+   solo a una pared de los extremos de su lado largo). Si ahí chocan, se deslizan a lo largo de esa
+   pared hasta el hueco libre más cercano (el armario junto a la puerta); si no hay ninguno, siguen la
+   regla general. Si arrimar hace que se descarte algún objeto que sin arrimar cabía, se usa la
+   distribución sin arrimar (arrange_objects).
 3. Lo que está apoyado encima de otro solo toca su tapa: no cuenta como solape.
 4. Un objeto de pared que se mete en un mueble sube a la tapa del mueble (el espejo sobre la cama).
 
@@ -22,6 +29,7 @@ app.geometry.room.Room, en sus propias coordenadas (el eje y del polígono es el
 """
 
 import math
+import re
 import unicodedata
 from dataclasses import dataclass, replace
 
@@ -36,6 +44,20 @@ GAP_M = 0.01
 EPSILON = 1e-9
 # Palabras que identifican una puerta en el nombre normalizado (sin tildes, minúsculas).
 DOOR_WORDS = ("puerta", "door")
+# Muebles de suelo que normalmente van contra una pared: palabras COMPLETAS del nombre normalizado
+# ("cámara" no es una cama). La cama se arrima por el cabecero.
+BED_WORDS = frozenset({"cama", "camas", "litera", "literas", "bed", "beds"})
+WALL_FURNITURE_WORDS = BED_WORDS | frozenset(
+    {
+        "armario", "armarios", "ropero", "roperos", "closet", "wardrobe",
+        "tocador", "tocadores", "dresser", "vanity",
+        "escritorio", "escritorios", "desk",
+        "estante", "estantes", "estanteria", "estanterias", "librero", "shelf", "shelves", "bookcase",
+        "bookshelf",
+    }
+)  # fmt: skip
+# Distancia (en metros) por debajo de la cual esos muebles se arriman a la pared más cercana.
+WALL_SNAP_DISTANCE_M = 0.30
 
 REASON_OUTSIDE = "fuera de la habitación"
 REASON_TOO_TALL = "más alto que la sala"
@@ -73,6 +95,20 @@ def normalized(text):
 
 def is_door(item):
     return item.kind == "wall" and any(word in normalized(item.name) for word in DOOR_WORDS)
+
+
+def _name_words(item):
+    """Las palabras del nombre normalizado: "Armario-ropero 2" -> {"armario", "ropero", "2"}."""
+    return set(re.findall(r"[a-z0-9]+", normalized(item.name)))
+
+
+def is_bed(item):
+    return item.kind == "floor" and bool(_name_words(item) & BED_WORDS)
+
+
+def goes_against_wall(item):
+    """Si es un mueble de suelo que normalmente va contra una pared (armario, cama, tocador...)."""
+    return item.kind == "floor" and bool(_name_words(item) & WALL_FURNITURE_WORDS)
 
 
 def footprint(item):
@@ -322,8 +358,81 @@ def _first_blocker_name(item, placed):
     return next(other.name for other in placed if overlaps(item, other))
 
 
-def _place_floor(item, placed, room):
-    """(objeto colocado, None) o (None, motivo de descarte)."""
+def _headboard_sides(item):
+    """Paredes a las que puede ir el cabecero de una cama: las de los extremos de su lado largo."""
+    if item.width_m > item.depth_m + EPSILON:
+        return ("left", "right")  # larga en x: el cabecero mira a una pared x = 0 o x = W
+    if item.depth_m > item.width_m + EPSILON:
+        return ("back", "front")
+    return WALL_SIDES  # cuadrada: cualquier pared
+
+
+def snap_furniture_to_wall(item, room):
+    """Un mueble de pared (goes_against_wall) arrimado a la pared más cercana, si está a menos de
+    WALL_SNAP_DISTANCE_M de ella; la cama, solo por el cabecero. No gira el mueble ni lo mueve a lo
+    largo de la pared. Empates: orden de WALL_SIDES.
+
+    Returns:
+        (objeto pegado, eje en el que puede deslizarse: "x" o "z"), o None si no se arrima (otro
+        mueble, apoyado encima de algo o lejos de las paredes). O(1).
+    """
+    if not goes_against_wall(item) or item.elevation_m > EPSILON:
+        return None
+    x0, x1, z0, z1 = footprint(item)
+    gaps = {"back": z0, "left": x0, "right": room.width_m - x1, "front": room.length_m - z1}
+    sides = _headboard_sides(item) if is_bed(item) else WALL_SIDES
+    # "A menos de 30 cm": con la holgura, 30 cm con ruido de coma flotante no cuentan.
+    limit = WALL_SNAP_DISTANCE_M - EPSILON
+    near = [(gaps[side], WALL_SIDES.index(side), side) for side in sides if gaps[side] < limit]
+    if not near:
+        return None
+    side = min(near)[2]
+    if side == "back":
+        return replace(item, center_z=item.depth_m / 2), "x"
+    if side == "front":
+        return replace(item, center_z=room.length_m - item.depth_m / 2), "x"
+    if side == "left":
+        return replace(item, center_x=item.width_m / 2), "z"
+    return replace(item, center_x=room.width_m - item.width_m / 2), "z"
+
+
+def slide_along_wall(item, axis, placed, room):
+    """item deslizado SOLO a lo largo de axis hasta la posición libre más cercana, o None.
+
+    Al contrario que _free_position (que solo prueba junto a los objetos que estorban en la posición
+    pedida), recorre todos los de la franja de la pared (wall_strip) que coinciden en altura: la
+    posición libre más cercana es la pedida o queda pegada (a GAP_M) a un lado de uno de ellos, así que
+    se prueban esas 2k + 1 posiciones de menor a mayor desplazamiento (empate: la de menor coordenada).
+    Determinista. O(n + k²) con k = objetos de la franja.
+    """
+    item_low, item_high = item.elevation_m, item.elevation_m + item.height_m
+    blockers = [
+        other
+        for other in wall_strip(item, axis, placed)
+        if _span_overlap(item_low, item_high, other.elevation_m, other.elevation_m + other.height_m) > EPSILON
+    ]
+    start = item.center_x if axis == "x" else item.center_z
+    half = (item.width_m if axis == "x" else item.depth_m) / 2
+    positions = {start}
+    for other in blockers:
+        ox0, ox1, oz0, oz1 = footprint(other)
+        low, high = (ox0, ox1) if axis == "x" else (oz0, oz1)
+        positions.update((low - GAP_M - half, high + GAP_M + half))
+    for position in sorted(positions, key=lambda value: (abs(value - start), value)):
+        candidate = replace(item, center_x=position) if axis == "x" else replace(item, center_z=position)
+        if inside_room(candidate, room) and not any(overlaps(candidate, other) for other in blockers):
+            return candidate
+    return None
+
+
+def _place_floor(item, placed, room, snap=True):
+    """(objeto colocado, None) o (None, motivo de descarte). Con snap, arrima los muebles de pared."""
+    against = snap_furniture_to_wall(item, room) if snap else None
+    # Lo que se apilaría encima de otro mueble (un estante pequeño sobre el escritorio) no se arrima.
+    if against is not None and _stack_on(item, placed, room) is None:
+        slid = slide_along_wall(*against, placed, room)
+        if slid is not None:
+            return slid, None
     if not any(overlaps(item, other) for other in placed):
         return item, None
     stacked = _stack_on(item, placed, room)
@@ -382,6 +491,11 @@ def arrange_objects(room, items):
     Orden de proceso: puertas, objetos de suelo de mayor a menor área (empates por orden original) y
     el resto de objetos de pared.
 
+    Los muebles de pared se arriman a ella (snap_furniture_to_wall). Arrimar uno le quita sitio a los
+    que vienen después, así que se distribuye también sin arrimar y, si con el arrimado se descarta
+    algún objeto que sin él cabía, se devuelve la distribución sin arrimar: nunca se pierde un objeto por
+    arrimar los muebles. Determinista; el coste, como mucho, el doble.
+
     Args:
         room: con width_m, length_m y height_m.
         items: objetos ya validados y dentro de la sala, en el orden del modelo.
@@ -389,6 +503,21 @@ def arrange_objects(room, items):
     Returns:
         (colocados en el orden original, [(nombre, motivo)] de los descartados en el orden original).
     """
+    kept, dropped = _arrange(room, items, snap=True)
+    if not dropped:
+        return _in_order(kept), _in_order(dropped)
+    plain_kept, plain_dropped = _arrange(room, items, snap=False)
+    if dropped.keys() <= plain_dropped.keys():
+        return _in_order(kept), _in_order(dropped)
+    return _in_order(plain_kept), _in_order(plain_dropped)
+
+
+def _in_order(by_index):
+    return [by_index[i] for i in sorted(by_index)]
+
+
+def _arrange(room, items, snap):
+    """({índice: colocado}, {índice: (nombre, motivo)}) con o sin arrimar los muebles de pared."""
     indexed = list(enumerate(items))
     doors = [(i, item) for i, item in indexed if is_door(item)]
     floor = sorted(
@@ -399,14 +528,16 @@ def arrange_objects(room, items):
 
     placed, kept, dropped = [], {}, {}
     for i, item in doors + floor + walls:
-        place = _place_floor if item.kind == "floor" else _place_wall
-        result, reason = place(item, placed, room)
+        if item.kind == "floor":
+            result, reason = _place_floor(item, placed, room, snap)
+        else:
+            result, reason = _place_wall(item, placed, room)
         if result is None:
             dropped[i] = (item.name, reason)
         else:
             placed.append(result)
             kept[i] = result
-    return [kept[i] for i in sorted(kept)], [dropped[i] for i in sorted(dropped)]
+    return kept, dropped
 
 
 # --- Un objeto en una sala guardada (CONTRATO-FASE0.md) ----------------------------------------------
