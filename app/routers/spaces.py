@@ -37,7 +37,7 @@ from app.schemas.space import (
 )
 from app.services.omniroute import OmniRouteError, suggest_layout
 from app.services.photo_estimator import PhotoEstimateError, PhotoEstimateTimeout, estimate_room_from_photo
-from app.services.photo_undo import photo_undo_store, restore_room, snapshot_room
+from app.services.photo_undo import get_photo_undo_store, restore_room, snapshot_room
 from app.services.semantic_filter import cached_furniture_coherence
 from app.utils.helpers import ImageDecodeError, decode_image, load_image_matrix, summarize_image
 from app.utils.rate_limit import enforce_ai_quota
@@ -80,11 +80,6 @@ def get_layout_suggester():
 def get_photo_estimator():
     """Dependencia de FastAPI que devuelve el estimador de fotos; las pruebas lo sustituyen por uno falso."""
     return estimate_room_from_photo
-
-
-def get_photo_undo_store():
-    """Dependencia de FastAPI con el almacén de Deshacer de la foto; las pruebas usan uno limpio."""
-    return photo_undo_store
 
 
 def get_coherence_validator():

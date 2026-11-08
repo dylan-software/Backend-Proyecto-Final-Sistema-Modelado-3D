@@ -7,7 +7,7 @@ answers 404, exactly like one that does not exist, so ids of other accounts cann
 import asyncio
 from dataclasses import asdict
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -22,8 +22,11 @@ from app.routers.errors import DATABASE_ERRORS, database_error
 from app.routers.groups import load_owned_group
 from app.schemas.room import (
     MAX_LAYOUT_ITEMS,
+    ItemCreate,
+    ItemUpdate,
     LayoutRequest,
     LayoutResponse,
+    PlacedItemResponse,
     RoomCreate,
     RoomDetail,
     RoomItem,
@@ -32,11 +35,14 @@ from app.schemas.room import (
     Vertex,
     VertexInsert,
 )
+from app.services.photo_undo import get_photo_undo_store
+from app.services.room_objects import RoomObjectError, delete_object, place_object, update_object
 
 router = APIRouter(prefix="/api/v1/spaces/rooms", tags=["rooms"])
 
 RoomId = Path(gt=0)
 VertexIndex = Path(ge=0)
+ItemId = Path(gt=0)
 
 
 def room_detail(row):
@@ -268,6 +274,111 @@ async def list_room_items(
     """
     row = await load_owned_room(session, room_id, current_user, selectinload(Habitacion.muebles))
     return RoomItemsOut(items=[room_item(piece) for piece in sorted(row.muebles, key=lambda piece: piece.id)])
+
+
+def _placed(result):
+    return PlacedItemResponse(item=room_item(result.piece), wall=result.wall, adjusted=result.adjusted)
+
+
+async def _room_objects_call(operation):
+    """Ejecuta una operación de app.services.room_objects y traduce RoomObjectError a su respuesta HTTP."""
+    try:
+        return await operation
+    except RoomObjectError as exc:
+        raise HTTPException(exc.status_code, exc.message) from None
+
+
+@router.post("/{room_id}/items", response_model=PlacedItemResponse, status_code=status.HTTP_201_CREATED)
+async def add_room_item(
+    body: ItemCreate,
+    room_id: int = RoomId,
+    session: AsyncSession = Depends(get_session),
+    undo_store=Depends(get_photo_undo_store),
+    current_user: str = Depends(get_current_user),
+):
+    """Añade un objeto a la sala; el servidor calcula su posición (CONTRATO-FASE0.md).
+
+    De pared: pegado a la pared pedida de una sala rectangular, centrado. De suelo: primer hueco libre.
+    Sin IA ni cuota. Vacía la pila de deshacer la foto de la sala.
+
+    Returns:
+        201 con {item, wall, adjusted}.
+
+    Raises:
+        HTTPException: 401 sin sesión válida, 404 sala ajena o inexistente, 409 sin sitio, más alto que la
+            sala o sala con 200 objetos, 422 cuerpo inválido u objeto de pared en sala no rectangular,
+            503/500 fallo de base de datos.
+    """
+    row = await load_owned_room(session, room_id, current_user, selectinload(Habitacion.muebles))
+    result = await _room_objects_call(
+        place_object(
+            session,
+            row,
+            name=body.name,
+            kind=body.kind,
+            wall=body.wall,
+            width_cm=body.width_cm,
+            depth_cm=body.depth_cm,
+            height_cm=body.height_cm,
+            elevation_cm=body.elevation_cm,
+            undo_store=undo_store,
+        )
+    )
+    return _placed(result)
+
+
+@router.patch("/{room_id}/items/{item_id}", response_model=PlacedItemResponse)
+async def update_room_item(
+    body: ItemUpdate,
+    room_id: int = RoomId,
+    item_id: int = ItemId,
+    session: AsyncSession = Depends(get_session),
+    undo_store=Depends(get_photo_undo_store),
+    current_user: str = Depends(get_current_user),
+):
+    """Renombra, cambia medidas o mueve un objeto; el servidor revalida y devuelve la posición final.
+
+    Si la posición pedida choca, pasa al hueco libre más cercano (adjusted=true). Vacía la pila de
+    deshacer la foto de la sala.
+
+    Raises:
+        HTTPException: 401 sin sesión válida, 404 sala ajena o inexistente u objeto que no es de esa sala,
+            409 no cabe, 422 cuerpo inválido o pared en sala no rectangular, 503/500 fallo de base de datos.
+    """
+    row = await load_owned_room(session, room_id, current_user, selectinload(Habitacion.muebles))
+    result = await _room_objects_call(
+        update_object(
+            session,
+            row,
+            item_id,
+            name=body.name,
+            width_cm=body.width_cm,
+            depth_cm=body.depth_cm,
+            height_cm=body.height_cm,
+            position=body.position,
+            undo_store=undo_store,
+        )
+    )
+    return _placed(result)
+
+
+@router.delete("/{room_id}/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_room_item(
+    room_id: int = RoomId,
+    item_id: int = ItemId,
+    session: AsyncSession = Depends(get_session),
+    undo_store=Depends(get_photo_undo_store),
+    current_user: str = Depends(get_current_user),
+):
+    """Borra un objeto de la sala (204 sin cuerpo). Vacía la pila de deshacer la foto de la sala.
+
+    Raises:
+        HTTPException: 401 sin sesión válida, 404 sala u objeto ajenos o inexistentes, 503/500 fallo de
+            base de datos.
+    """
+    row = await load_owned_room(session, room_id, current_user, selectinload(Habitacion.muebles))
+    await _room_objects_call(delete_object(session, row, item_id, undo_store=undo_store))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 async def _catalog_for_layout(session, user_id, item_ids):
