@@ -160,6 +160,11 @@ class PhotoUndoStore:
         stack = self._rooms.peek((user_id, room_id))
         return len(stack) if stack else 0
 
+    def forget(self, user_id, room_id):
+        """Vacía la pila de la sala: tras añadir, mover o borrar objetos, deshacer una foto ya no puede
+        borrar ese trabajo (CONTRATO-FASE0.md, sección 4). O(1)."""
+        self._rooms.discard((user_id, room_id))
+
     def clear(self):
         """Olvida todo el historial (lo mismo que un reinicio del servidor)."""
         self._rooms.clear()
