@@ -22,8 +22,14 @@ class OmniRouteError(Exception):
     """Raised when OmniRoute is not configured or returns an unusable answer."""
 
 
-async def chat_completion(messages, temperature=0.4):
-    """Send an OpenAI-compatible chat completion request to OmniRoute and return the reply text."""
+async def _completion_message(messages, temperature, tools=None):
+    """Petición chat/completions compatible con OpenAI; devuelve el dict `message` de la respuesta.
+
+    Con tools, el modelo puede pedir llamadas a funciones (tool_choice "auto").
+
+    Raises:
+        OmniRouteError: falta la configuración, la petición falló o la respuesta no tiene esa forma.
+    """
     settings = get_settings()
     base_url = settings.omniroute_base_url.rstrip("/")
     api_key = settings.omniroute_api_key
@@ -32,22 +38,57 @@ async def chat_completion(messages, temperature=0.4):
         raise OmniRouteError("OMNIROUTE_API_KEY is not set")
     if not model:
         raise OmniRouteError("OMNIROUTE_MODEL is not set")
+    payload = {"model": model, "messages": messages, "temperature": temperature}
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
 
     try:
         async with httpx.AsyncClient(timeout=settings.omniroute_timeout) as client:
             response = await client.post(
                 f"{base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
-                json={"model": model, "messages": messages, "temperature": temperature},
+                json=payload,
             )
             response.raise_for_status()
     except httpx.HTTPError as exc:
         raise OmniRouteError(f"request failed: {exc}") from exc
 
     try:
-        return response.json()["choices"][0]["message"]["content"] or ""
+        message = response.json()["choices"][0]["message"]
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise OmniRouteError("unexpected response shape") from exc
+    if not isinstance(message, dict):
+        raise OmniRouteError("unexpected response shape")
+    return message
+
+
+async def chat_completion(messages, temperature=0.4):
+    """Send an OpenAI-compatible chat completion request to OmniRoute and return the reply text."""
+    message = await _completion_message(messages, temperature)
+    content = message.get("content") or ""
+    if not isinstance(content, str):
+        raise OmniRouteError("unexpected response shape")
+    return content
+
+
+async def chat_completion_with_tools(messages, tools, temperature=0.4):
+    """Como chat_completion, pero ofrece tools al modelo.
+
+    Returns:
+        (texto, tool_calls): el texto puede estar vacío si el modelo solo pidió llamadas; tool_calls es
+        la lista tal como llega (cada una con function.name y function.arguments en JSON de texto).
+        Quien la use debe validarla: son datos del modelo, no confiables.
+
+    Raises:
+        OmniRouteError: como chat_completion, o tool_calls no es una lista.
+    """
+    message = await _completion_message(messages, temperature, tools)
+    content = message.get("content") or ""
+    calls = message.get("tool_calls") or []
+    if not isinstance(content, str) or not isinstance(calls, list):
+        raise OmniRouteError("unexpected response shape")
+    return content, calls
 
 
 async def suggest_layout(dims, estilo, instrucciones=None, superficies=(), contexto_visual=None, planta=None):
