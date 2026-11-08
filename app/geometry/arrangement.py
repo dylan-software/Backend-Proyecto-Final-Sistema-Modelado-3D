@@ -14,10 +14,17 @@ ni IA; mismo resultado con la misma entrada) en una sala rectangular [0, W] x [0
 
 Los objetos son dataclasses con name, kind, width_m (eje x), depth_m (eje z), height_m, center_x,
 center_z y elevation_m (base). Se devuelven copias; las entradas no se modifican.
+
+Además, la colocación de UN objeto en una sala guardada (CONTRATO-FASE0.md), con la misma lógica:
+place_on_wall (pared pedida de una sala rectangular), first_free_floor_spot (primer hueco del suelo dentro
+del polígono real) y settle_at (revalidar una posición pedida). Esas funciones reciben la sala como
+app.geometry.room.Room, en sus propias coordenadas (el eje y del polígono es el eje z de los objetos).
 """
 
 import unicodedata
-from dataclasses import replace
+from dataclasses import dataclass, replace
+
+from app.geometry.layout import MAX_PIECE_WORK, _steps, grid_step
 
 # Objeto pequeño que se puede poner encima de otro (en metros y fracción del área del de abajo).
 STACK_MAX_HEIGHT_M = 0.6
@@ -29,6 +36,25 @@ EPSILON = 1e-9
 DOOR_WORDS = ("puerta", "door")
 
 REASON_OUTSIDE = "fuera de la habitación"
+REASON_TOO_TALL = "más alto que la sala"
+REASON_NO_SPACE = "sin sitio libre"
+
+# Paredes de una sala rectangular, en el orden de desempate de snap_to_wall: back = z mínima,
+# left = x mínima, right = x máxima, front = z máxima.
+WALL_SIDES = ("back", "left", "right", "front")
+# Distancia a la que un objeto cuenta como pegado a una pared.
+ATTACH_TOLERANCE_M = 0.01
+# Relativa al área: el polígono es un rectángulo si su área es la de su caja delimitadora.
+RECTANGLE_AREA_TOLERANCE = 1e-6
+
+
+@dataclass(frozen=True)
+class RoomBox:
+    """Sala rectangular [0, width_m] x [0, length_m] x [0, height_m]: el marco de este módulo."""
+
+    width_m: float
+    length_m: float
+    height_m: float
 
 
 def overlap_reason(name):
@@ -97,7 +123,6 @@ def snap_to_wall(item, room):
     Returns:
         (objeto, eje en el que puede deslizarse: "x" o "z"), o None.
     """
-    along, thickness = item.width_m, item.depth_m
     distances = [
         (item.center_z, "back"),  # z = 0
         (item.center_x, "left"),  # x = 0
@@ -106,6 +131,19 @@ def snap_to_wall(item, room):
     ]
     # min es estable: con distancias iguales gana la primera de la lista (orden fijo).
     side = min(distances, key=lambda entry: entry[0])[1]
+    return snap_to_side(item, room, side)
+
+
+def snap_to_side(item, room, side):
+    """El objeto de pared pegado a la pared side ("back", "left", "right" o "front"), o None si no cabe.
+
+    width_m es su ancho a lo largo de la pared y depth_m su grosor. La coordenada a lo largo de la pared
+    se conserva, acotada al tramo.
+
+    Returns:
+        (objeto, eje en el que puede deslizarse: "x" o "z"), o None.
+    """
+    along, thickness = item.width_m, item.depth_m
     if side in ("back", "front"):
         if along > room.width_m + EPSILON or thickness > room.length_m + EPSILON:
             return None
@@ -147,13 +185,16 @@ def _shift_candidates(item, blockers, axes):
     return [entry[3] for entry in candidates]
 
 
-def _free_position(item, placed, room, axes):
-    """item si no choca con nada; si no, la posición desplazada más cercana libre, o None."""
+def _free_position(item, placed, fits, axes):
+    """item si no choca con nada; si no, la posición desplazada más cercana libre, o None.
+
+    fits(candidato) dice si un candidato desplazado queda dentro de la sala.
+    """
     blockers = [other for other in placed if overlaps(item, other)]
     if not blockers:
         return item
     for candidate in _shift_candidates(item, blockers, axes):
-        if inside_room(candidate, room) and not any(overlaps(candidate, other) for other in placed):
+        if fits(candidate) and not any(overlaps(candidate, other) for other in placed):
             return candidate
     return None
 
@@ -186,7 +227,7 @@ def _place_floor(item, placed, room):
     stacked = _stack_on(item, placed, room)
     if stacked is not None:
         return stacked, None
-    moved = _free_position(item, placed, room, axes=("x", "z"))
+    moved = _free_position(item, placed, lambda candidate: inside_room(candidate, room), axes=("x", "z"))
     if moved is not None:
         return moved, None
     return None, overlap_reason(_first_blocker_name(item, placed))
@@ -210,14 +251,18 @@ def _place_wall(item, placed, room):
     snapped = snap_to_wall(item, room)
     if snapped is None:
         return None, REASON_OUTSIDE
-    item, axis = snapped
+    return _settle_on_wall(*snapped, placed, room)
+
+
+def _settle_on_wall(item, axis, placed, room):
+    """Un objeto ya pegado a su pared: sube sobre los muebles y se desliza si choca. (objeto, motivo)."""
     if not is_door(item):
         raised = _raise_above_furniture(item, placed, room)
         if raised is None:
             return None, overlap_reason(_first_blocker_name(item, placed))
         item = raised
     # Contra otros objetos de pared (o una puerta contra un mueble), solo se desliza a lo largo de la pared.
-    moved = _free_position(item, placed, room, axes=(axis,))
+    moved = _free_position(item, placed, lambda candidate: inside_room(candidate, room), axes=(axis,))
     if moved is None:
         return None, overlap_reason(_first_blocker_name(item, placed))
     return moved, None
@@ -254,3 +299,145 @@ def arrange_objects(room, items):
             placed.append(result)
             kept[i] = result
     return [kept[i] for i in sorted(kept)], [dropped[i] for i in sorted(dropped)]
+
+
+# --- Un objeto en una sala guardada (CONTRATO-FASE0.md) ----------------------------------------------
+
+
+def _moved(item, dx, dz):
+    return replace(item, center_x=item.center_x + dx, center_z=item.center_z + dz)
+
+
+def rectangle_of(room):
+    """(origen_x, origen_z, RoomBox) si el polígono de room es un rectángulo alineado con los ejes, o None.
+
+    Un polígono simple dentro de su caja delimitadora con la misma área que ella ES esa caja, así que los
+    vértices colineales o repetidos no importan.
+    """
+    box = room.bounding_box()
+    width, length = box.max_x - box.min_x, box.max_y - box.min_y
+    if abs(room.area_m2() - width * length) > RECTANGLE_AREA_TOLERANCE * max(1.0, width * length):
+        return None
+    return box.min_x, box.min_y, RoomBox(width, length, room.height_m)
+
+
+def wall_extents(width_x, depth_z, side):
+    """(ancho a lo largo de la pared, grosor) de un objeto con extensión width_x en x y depth_z en z."""
+    return (width_x, depth_z) if side in ("back", "front") else (depth_z, width_x)
+
+
+def attached_wall(item, room):
+    """Pared a la que el objeto está pegado (a ATTACH_TOLERANCE_M o menos), o None.
+
+    Solo en salas rectangulares; en una esquina gana la primera de WALL_SIDES.
+    """
+    rectangle = rectangle_of(room)
+    if rectangle is None:
+        return None
+    origin_x, origin_z, box = rectangle
+    x0, x1, z0, z1 = footprint(_moved(item, -origin_x, -origin_z))
+    gaps = {"back": z0, "left": x0, "right": box.width_m - x1, "front": box.length_m - z1}
+    return next((side for side in WALL_SIDES if abs(gaps[side]) <= ATTACH_TOLERANCE_M), None)
+
+
+def place_on_wall(item, room, side, placed, centered=True):
+    """Pega un objeto a la pared side de una sala rectangular.
+
+    item.width_m es su ancho a lo largo de la pared y depth_m su grosor (como los da la IA). Con
+    centered=True queda en el centro de la pared; si no, conserva su coordenada a lo largo de ella,
+    acotada al tramo. La base (elevation_m) se acota entre el suelo y el techo; la puerta va al suelo.
+    Si choca, sube sobre los muebles de suelo y se desliza a lo largo de la pared (como arrange_objects).
+
+    Args:
+        room: app.geometry.room.Room rectangular.
+        placed: objetos que ya están en la sala, en sus coordenadas.
+
+    Returns:
+        (objeto en coordenadas de room, None) o (None, motivo).
+
+    Raises:
+        ValueError: la sala no es rectangular o side no es una pared.
+    """
+    if side not in WALL_SIDES:
+        raise ValueError(f"pared desconocida: {side}")
+    rectangle = rectangle_of(room)
+    if rectangle is None:
+        raise ValueError("los objetos de pared solo van en salas rectangulares")
+    origin_x, origin_z, box = rectangle
+    if item.height_m > box.height_m + EPSILON:
+        return None, REASON_TOO_TALL
+    local = _moved(item, -origin_x, -origin_z)
+    if centered:
+        local = replace(local, center_x=box.width_m / 2, center_z=box.length_m / 2)
+    snapped = snap_to_side(local, box, side)
+    if snapped is None:
+        return None, REASON_OUTSIDE
+    others = [_moved(other, -origin_x, -origin_z) for other in placed]
+    result, reason = _settle_on_wall(*snapped, others, box)
+    if result is None:
+        return None, reason
+    return _moved(result, origin_x, origin_z), None
+
+
+def first_free_floor_spot(item, room, placed, max_work=MAX_PIECE_WORK):
+    """Primer hueco del suelo para item (su posición se ignora; la base queda a 0).
+
+    Recorre la caja delimitadora desde su esquina mínima, por filas (x y luego z), con el paso grid_step
+    del layout, y acepta la primera huella dentro del polígono real que no se solapa en 3D con nada de
+    placed. Determinista. Cada candidato cuesta (vértices + objetos colocados) unidades, hasta max_work.
+
+    Returns:
+        (objeto, None) o (None, motivo).
+    """
+    if item.height_m > room.height_m + EPSILON:
+        return None, REASON_TOO_TALL
+    box = room.bounding_box()
+    step = grid_step(box)
+    cost = len(room.vertices) + len(placed)
+    spent = 0
+    for z0 in _steps(box.min_y, box.max_y - item.depth_m, step):
+        for x0 in _steps(box.min_x, box.max_x - item.width_m, step):
+            spent += cost
+            if spent > max_work:
+                return None, REASON_NO_SPACE
+            candidate = replace(
+                item, center_x=x0 + item.width_m / 2, center_z=z0 + item.depth_m / 2, elevation_m=0.0
+            )
+            if room.contains_rectangle(x0, z0, item.width_m, item.depth_m) and not any(
+                overlaps(candidate, other) for other in placed
+            ):
+                return candidate, None
+    return None, REASON_NO_SPACE
+
+
+def _fits_polygon(item, room):
+    x0, _, z0, _ = footprint(item)
+    return room.contains_rectangle(x0, z0, item.width_m, item.depth_m)
+
+
+def settle_at(item, room, placed, axes=("x", "z")):
+    """Revalida un objeto en la posición pedida (mover o cambiar medidas).
+
+    Lo acota a la caja de la sala y entre el suelo y el techo; su huella debe quedar dentro del polígono
+    real. Si choca con algo de placed, pasa a la posición libre más cercana desplazándose por axes.
+
+    Returns:
+        (objeto, None) o (None, motivo).
+    """
+    if item.height_m > room.height_m + EPSILON:
+        return None, REASON_TOO_TALL
+    box = room.bounding_box()
+    if item.width_m > box.max_x - box.min_x + EPSILON or item.depth_m > box.max_y - box.min_y + EPSILON:
+        return None, REASON_OUTSIDE
+    item = replace(
+        item,
+        center_x=_clamp(item.center_x, box.min_x + item.width_m / 2, box.max_x - item.width_m / 2),
+        center_z=_clamp(item.center_z, box.min_y + item.depth_m / 2, box.max_y - item.depth_m / 2),
+        elevation_m=_clamp(item.elevation_m, 0.0, room.height_m - item.height_m),
+    )
+    if not _fits_polygon(item, room):
+        return None, REASON_OUTSIDE
+    moved = _free_position(item, placed, lambda candidate: _fits_polygon(candidate, room), axes)
+    if moved is None:
+        return None, overlap_reason(_first_blocker_name(item, placed))
+    return moved, None
