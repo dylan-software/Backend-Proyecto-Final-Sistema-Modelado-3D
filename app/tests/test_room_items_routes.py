@@ -214,6 +214,23 @@ async def test_patch_slides_a_picture_and_resizes(user_a, db_sessions, undo_stor
     )
 
 
+async def test_patch_without_wall_keeps_a_picture_on_the_nearest_wall(user_a, db_sessions, undo_store):
+    room_id = await rectangle_room(user_a)
+    picture = (await add(user_a, room_id, PICTURE)).json()["item"]
+
+    # Soltado en medio de la sala, más cerca de la pared del fondo (centro 1,525; 0,7).
+    moved = await user_a.patch(items_url(room_id, picture["id"]), json={"position": {"x": 1.5, "y": 0.4}})
+
+    assert moved.status_code == 200, moved.text
+    body = moved.json()
+    assert (body["wall"], body["adjusted"]) == ("back", True)
+    item = body["item"]
+    # Pegado a 0 cm, 60 cm a lo largo de la pared y la misma altura.
+    assert (item["x"], item["y"], item["widthM"], item["depthM"], item["elevationM"]) == pytest.approx(
+        (1.225, 0, 0.6, 0.05, 1.3)
+    )
+
+
 async def test_patch_errors(user_a, db_sessions, undo_store):
     room_id = await rectangle_room(user_a)
     other_id = await rectangle_room(user_a)

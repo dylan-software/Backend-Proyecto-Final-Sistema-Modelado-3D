@@ -257,8 +257,11 @@ lugar, `app/geometry/units.py`.
     acotada con el tope por mueble del layout.
   - **PATCH** (al menos un campo): `widthCm`/`depthCm` son la extensión en x/z, como `widthM`/`depthM`.
     Con `position` (esquina mínima en metros) se pide esa posición; con `position.wall` se pega a esa
-    pared y la otra coordenada se acota al tramo. Sin `position`, el objeto conserva centro y base, y si
-    tocaba una pared (a 1 cm o menos) sigue pegado. La posición se acota a la sala y entre suelo y
+    pared y la otra coordenada se acota al tramo. Un objeto de pared (levantado, en sala rectangular,
+    pegado a una pared o sin nada debajo) movido con `position` SIN `wall` va a la pared más cercana a
+    la posición pedida: a 0 cm, entero dentro de su tramo, sin girar y sin solaparse (como con `wall`);
+    lo que está apoyado encima de un mueble (la mochila sobre la cama) se mueve libre. Sin `position`,
+    el objeto conserva centro y base, y si tocaba una pared (a 1 cm o menos) sigue pegado. La posición se acota a la sala y entre suelo y
     techo; si choca, pasa al hueco libre más cercano (`adjusted: true`). Solo con `name` no se toca la
     geometría.
   - Validación estricta: nombres de texto plano de 1 a 60 caracteres, medidas de 5 a 400 cm, sin NaN,
