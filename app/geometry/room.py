@@ -4,10 +4,15 @@ Coordinates are meters. The polygon lives in the floor plane: its x is the room'
 the room's z axis (depth); the room's height runs along the 3D y axis, which points up.
 
 Doors and windows are not ported: nothing persists them yet, so the clear-path check is skipped.
+
+Los vértices de Room se guardan en un anillo (CircularDoublyLinkedList de app.structures): la pared i va
+del vértice i al siguiente, y la siguiente del último vértice es el primero sin calcular ningún módulo.
 """
 
 import math
 from dataclasses import dataclass
+
+from app.structures import CircularDoublyLinkedList
 
 # Polygons with a smaller area are treated as degenerate (collinear or collapsed vertices).
 MIN_AREA_M2 = 0.01
@@ -50,11 +55,26 @@ def _to_point(value):
 
 def _signed_area(vertices):
     """Shoelace formula: positive for counter-clockwise vertices, negative for clockwise."""
+    return _signed_area_of_edges((a, vertices[(i + 1) % len(vertices)]) for i, a in enumerate(vertices))
+
+
+def _signed_area_of_edges(edges):
+    """Fórmula del área con signo a partir de las aristas (a, b) en orden, cerrando el polígono. O(n).
+
+    Suma en el mismo orden que _signed_area, así que el resultado es idéntico bit a bit.
+    """
     total = 0.0
-    for i, a in enumerate(vertices):
-        b = vertices[(i + 1) % len(vertices)]
+    for a, b in edges:
         total += a.x * b.y - b.x * a.y
     return total / 2
+
+
+def _ring_of(points):
+    """Un anillo nuevo con los puntos en orden: el índice 0 es la cabeza. O(n)."""
+    ring = CircularDoublyLinkedList()
+    for point in points:
+        ring.append(point)
+    return ring
 
 
 def _orientation(p, q, r):
@@ -172,6 +192,14 @@ class Room:
 
     Every mutation validates the new shape before replacing the current one, so a rejected edit
     leaves the room unchanged.
+
+    Los vértices viven en un anillo (CircularDoublyLinkedList); la pared i es (vértice i, siguiente).
+    Costes (n = vértices):
+        vertices, vertices_json, area_m2, bounding_box, walls, contains_point: O(n).
+        contains_rectangle: O(n). neighbor_walls(i): O(min(i, n - i)).
+        move_vertex, insert_vertex, remove_vertex: O(min(i, n - i)) para llegar al nodo y cambiarlo en
+            O(1), más O(n²) de la validación del polígono (comprobar que no se cruza). set_vertices: O(n²).
+    Una edición rechazada deshace el cambio en el anillo antes de lanzar el error.
     """
 
     def __init__(self, vertices, height_m):
@@ -179,7 +207,7 @@ class Room:
         height_m = float(height_m)
         _validate(points)
         _validate_height(height_m)
-        self._vertices = points
+        self._ring = _ring_of(points)
         self._height_m = height_m
 
     @classmethod
@@ -204,33 +232,47 @@ class Room:
 
     @property
     def vertices(self):
-        return tuple(self._vertices)
+        return tuple(self._ring)
 
     @property
     def height_m(self):
         return self._height_m
 
     def vertices_json(self):
-        return [{"x": p.x, "y": p.y} for p in self._vertices]
+        return [{"x": p.x, "y": p.y} for p in self._ring]
 
     def area_m2(self):
-        return abs(_signed_area(self._vertices))
+        return abs(_signed_area_of_edges(self._ring.pairs()))
 
     def bounding_box(self):
-        xs = [p.x for p in self._vertices]
-        ys = [p.y for p in self._vertices]
+        xs = [p.x for p in self._ring]
+        ys = [p.y for p in self._ring]
         return BoundingBox(min(xs), min(ys), max(xs), max(ys))
+
+    def walls(self):
+        """Las paredes (inicio, fin) en orden, de la 0 a la última, que cierra con el vértice 0. O(n)."""
+        return self._ring.pairs()
+
+    def neighbor_walls(self, index):
+        """(pared anterior, pared siguiente) de la pared index, dando la vuelta en los extremos.
+
+        La pared index va del vértice index al siguiente; la anterior acaba en el vértice index y la
+        siguiente empieza en el vértice index + 1. O(min(i, n - i)) para llegar al nodo y O(1) después.
+
+        Raises:
+            RoomError: index fuera de rango.
+        """
+        self._check_index(index, "neighbor_walls")
+        node = self._ring.node_at(index)
+        return (node.prev.value, node.value), (node.next.value, node.next.next.value)
 
     def contains_point(self, x, y):
         """Point-in-polygon by ray casting, so callers respect the real shape, not its bounding box."""
         inside = False
-        v = self._vertices
-        j = len(v) - 1
-        for i in range(len(v)):
-            vi, vj = v[i], v[j]
+        # Cada pared (vj, vi) del anillo; el orden de las aristas no cambia el resultado (solo alterna).
+        for vj, vi in self._ring.pairs():
             if (vi.y > y) != (vj.y > y) and x < (vj.x - vi.x) * (y - vi.y) / (vj.y - vi.y) + vi.x:
                 inside = not inside
-            j = i
         return inside
 
     def contains_rectangle(self, x, y, width, depth):
@@ -242,10 +284,8 @@ class Room:
         its center decides. Walls along its edges (a piece pushed against a wall) do not count, and
         unlike a corner test, the center is never on a wall, where ray casting is ambiguous.
         """
-        v = self._vertices
         if any(
-            _segment_crosses_open_rectangle(v[i], v[(i + 1) % len(v)], x, y, x + width, y + depth)
-            for i in range(len(v))
+            _segment_crosses_open_rectangle(a, b, x, y, x + width, y + depth) for a, b in self._ring.pairs()
         ):
             return False
         return self.contains_point(x + width / 2, y + depth / 2)
@@ -253,34 +293,58 @@ class Room:
     # --- Mutations: the user can edit the room surface after the scan ---------------------------
 
     def _check_index(self, index, operation):
-        if not 0 <= index < len(self._vertices):
-            raise RoomError(f"{operation}: index {index} is out of range (0-{len(self._vertices) - 1})")
+        if not 0 <= index < len(self._ring):
+            raise RoomError(f"{operation}: index {index} is out of range (0-{len(self._ring) - 1})")
 
-    def _replace(self, points):
-        _validate(points)
-        self._vertices = points
+    def _validate_or_undo(self, undo):
+        """Valida la forma actual del anillo; si no vale, llama a undo() y relanza el error."""
+        try:
+            _validate(list(self._ring))
+        except Exception:
+            undo()
+            raise
 
     def set_vertices(self, vertices):
         """Replace the whole shape at once (re-scan or full manual redraw)."""
-        self._replace([_to_point(v) for v in vertices])
+        points = [_to_point(v) for v in vertices]
+        _validate(points)
+        self._ring = _ring_of(points)
 
     def move_vertex(self, index, point):
         """Move one vertex (drag-to-edit in the UI) without touching the others."""
         self._check_index(index, "move_vertex")
-        points = list(self._vertices)
-        points[index] = _to_point(point)
-        self._replace(points)
+        point = _to_point(point)
+        node = self._ring.node_at(index)
+        old = node.value
+        node.value = point
+
+        def undo():
+            node.value = old
+
+        self._validate_or_undo(undo)
 
     def insert_vertex(self, after_index, point):
         """Insert a vertex between after_index and the next one (splits an edge)."""
         self._check_index(after_index, "insert_vertex")
-        points = list(self._vertices)
-        points.insert(after_index + 1, _to_point(point))
-        self._replace(points)
+        point = _to_point(point)
+        # Tras el último vértice, el nodo nuevo queda al final (antes de la cabeza): la pared que cierra.
+        node = self._ring.insert_after(self._ring.node_at(after_index), point)
+        self._validate_or_undo(lambda: self._ring.remove(node))
 
     def remove_vertex(self, index):
         """Remove a vertex (simplifies the shape); a room never drops below a triangle."""
-        if len(self._vertices) <= 3:
+        if len(self._ring) <= 3:
             raise RoomError("remove_vertex: a room must keep at least 3 vertices")
         self._check_index(index, "remove_vertex")
-        self._replace([p for i, p in enumerate(self._vertices) if i != index])
+        node = self._ring.node_at(index)
+        was_head, before = node is self._ring.head, node.prev
+        value = self._ring.remove(node)
+
+        def undo():
+            # Vuelve a su sitio: como cabeza si lo era, si no detrás de su vértice anterior.
+            if was_head:
+                self._ring.insert(0, value)
+            else:
+                self._ring.insert_after(before, value)
+
+        self._validate_or_undo(undo)
