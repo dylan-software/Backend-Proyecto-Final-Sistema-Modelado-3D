@@ -13,6 +13,7 @@ from app.structures.fixed_array import FixedArray
 from app.structures.linked_queue import LinkedQueue, QueueNode
 from app.structures.linked_stack import LinkedStack, StackNode
 from app.structures.lru_cache import LruCache
+from app.structures.nary_tree import NaryTree, TreeNode
 
 __all__ = [
     "CapacityError",
@@ -24,7 +25,9 @@ __all__ = [
     "LinkedQueue",
     "LinkedStack",
     "LruCache",
+    "NaryTree",
     "QueueNode",
     "RingNode",
     "StackNode",
+    "TreeNode",
 ]
