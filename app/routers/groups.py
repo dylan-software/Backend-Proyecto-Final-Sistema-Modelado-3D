@@ -14,6 +14,7 @@ from app.models.space import Habitacion, ProjectGroup
 from app.routers.auth import get_current_user
 from app.routers.errors import DATABASE_ERRORS, database_error
 from app.schemas.group import GroupCreate, GroupOut, GroupsOut, GroupUpdate
+from app.services.project_tree import build_project_tree, groups_with_counts
 
 router = APIRouter(prefix="/api/v1/spaces/groups", tags=["groups"])
 
@@ -69,21 +70,25 @@ async def list_groups(
 ):
     """Los grupos de la cuenta, del más antiguo al más nuevo, con su número de proyectos.
 
+    Grupos y proyectos se arman como un árbol n-ario (cuenta -> grupos -> proyectos) y se listan y cuentan
+    con un recorrido en profundidad (app/services/project_tree.py).
+
     Raises:
         HTTPException: 401 sin sesión válida, 503/500 fallo de base de datos.
     """
     groups_query = select(ProjectGroup).where(ProjectGroup.user_id == current_user).order_by(ProjectGroup.id)
-    counts_query = (
-        select(Habitacion.group_id, func.count())
+    projects_query = (
+        select(Habitacion.id, Habitacion.group_id)
         .where(Habitacion.user_id == current_user, Habitacion.group_id.is_not(None))
-        .group_by(Habitacion.group_id)
+        .order_by(Habitacion.id)
     )
     try:
         groups = (await session.scalars(groups_query)).all()
-        counts = dict((await session.execute(counts_query)).all())
+        projects = (await session.execute(projects_query)).all()
     except DATABASE_ERRORS as exc:
         raise database_error(exc) from exc
-    return GroupsOut(groups=[group_out(group, counts.get(group.id, 0)) for group in groups])
+    tree = build_project_tree(groups, projects)
+    return GroupsOut(groups=[group_out(group, count) for group, count in groups_with_counts(tree)])
 
 
 @router.post("", response_model=GroupOut, status_code=status.HTTP_201_CREATED)
