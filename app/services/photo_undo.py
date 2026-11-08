@@ -172,3 +172,12 @@ class PhotoUndoStore:
 
 # El almacén del proceso; los endpoints lo reciben con la dependencia get_photo_undo_store.
 photo_undo_store = PhotoUndoStore()
+
+
+def get_photo_undo_store():
+    """Dependencia de FastAPI con el almacén de Deshacer de la foto; las pruebas usan uno limpio.
+
+    Vive aquí (no en app.routers.spaces) para que también la usen las rutas de objetos de
+    app.routers.rooms sin importaciones circulares; app.routers.spaces la reexporta.
+    """
+    return photo_undo_store
