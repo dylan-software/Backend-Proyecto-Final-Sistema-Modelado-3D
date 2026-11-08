@@ -62,8 +62,9 @@ Rasgos comunes:
 | Lista doblemente enlazada | `DoublyLinkedList` + `DoublyNode` (`doubly_linked_list.py`) | `push_front/back`, `pop_front/back`, `remove(nodo)`, `move_to_front(nodo)`: O(1). Recorrer: O(n) | **Sí, como base de `LruCache`** |
 | Caché LRU | `LruCache` (`lru_cache.py`) = `DoublyLinkedList` + `dict` | `get`, `put`, `discard`, `peek`, expulsar el menos usado: O(1) promedio | **Sí:** validador de coherencia de `POST /catalog` y almacén de pilas de deshacer |
 | Pila LIFO | `LinkedStack` + `StackNode` (`linked_stack.py`) | `push`, `pop`, `peek`, `len`: O(1). Recorrer, `clear`: O(n) | **Sí:** Deshacer de cada sala: foto, chat, objetos, layout y vértices (`app/services/room_undo.py`) |
-| Arreglo estático | `FixedArray` (`fixed_array.py`) | `get`, `set`, `a[i]`: O(1). `fill`, `index_of`, recorrer: O(n) | **No** (creado y probado; ver 2.6) |
-| Lista circular doble | `CircularDoublyLinkedList` + `RingNode` (`circular_doubly_linked_list.py`) | `append`, `insert_after(nodo)`, `remove(nodo)`: O(1). `get/set/insert/remove_at`: O(min(i, n−i)). `rotate(k)`: O(min(k, n−k)) | **No** (creada y probada; ver 2.7) |
+| Arreglo estático | `FixedArray` (`fixed_array.py`) | `get`, `set`, `a[i]`: O(1). `fill`, `index_of`, recorrer: O(n) | **Sí:** celdas del suelo y franja ocupada de cada pared al colocar objetos (`app/geometry/arrangement.py`; ver 2.6) |
+| Lista circular doble | `CircularDoublyLinkedList` + `RingNode` (`circular_doubly_linked_list.py`) | `append`, `insert_after(nodo)`, `remove(nodo)`: O(1). `get/set/insert/remove_at`: O(min(i, n−i)). `rotate(k)`: O(min(k, n−k)) | **Sí:** vértices y paredes de `Room` (`app/geometry/room.py`; ver 2.7) |
+| Árbol n-ario | `NaryTree` + `TreeNode` (`nary_tree.py`) | `add_child`, hijos, `len`: O(1). `remove(nodo)`: O(k) del subárbol. `walk`/`depth_first`/`count`: O(k). `depth`: O(h) | **Sí:** grupos y proyectos en `GET /groups` (`app/services/project_tree.py`; ver 2.8) |
 
 ### 2.2 Cola: `LinkedQueue` en el limitador de peticiones
 
@@ -217,7 +218,7 @@ El backend ya tenía un octree (`app/geometry/octree.py`). Cada nodo es un cubo 
 puntos de la escena: O(n log n) para construirlo y O(log n + k) por consulta, frente a O(m·n) por fuerza
 bruta. Su complejidad y sus tiempos medidos están en la sección "Estructura de datos: Octree" del README.
 
-### 2.6 `FixedArray`: creado y probado, sin integrar
+### 2.6 `FixedArray`: celdas del suelo y franja ocupada de cada pared
 
 **Clase.** Reserva `size` casillas una sola vez en el constructor y nunca crece ni encoge: no tiene `append`,
 `insert` ni `pop`.
@@ -226,23 +227,25 @@ bruta. Su complejidad y sus tiempos medidos están en la sección "Estructura de
   final.
 - Un índice que no es entero (un `bool` o un `slice`) lanza `TypeError`.
 
-**Dónde se integraría.** Como **prefiltro espacial del layout**, en `app/geometry/layout.py`: la búsqueda de
-huecos de `generate_layout` y el doble bucle de `validate_layout`.
-- La caja de la sala se dividiría en una rejilla. Un `FixedArray` de `filas*columnas` casillas, con índice
-  `fila*columnas+columna`, guardaría la lista de muebles que tocan cada celda.
-- Al probar una posición solo se compararía con los muebles de sus celdas, en vez de con todos.
-- La comprobación exacta no cambiaría. Solo serviría para elegir candidatos, porque marcar celdas enteras
-  rechazaría posiciones válidas por la tolerancia de 2 cm.
-- Tendría un tope de celdas (por ejemplo 250 000), con respaldo al método actual.
-- La prueba de aceptación: el resultado debe ser **idéntico** al de la fuerza bruta.
+**Dónde se usa.** En `app/geometry/arrangement.py`, que coloca los objetos de la foto, del formulario, del
+chat y de los movimientos a mano:
+- **Celdas del suelo (`FloorCells`).** La caja de la sala se parte en una rejilla fija de 16 × 16 celdas,
+  guardada en un `FixedArray` de 256 casillas con índice `fila*16+columna`. Cada casilla tiene la lista de
+  objetos cuya huella toca esa celda (con una celda de margen). `first_free_floor_spot` compara cada posición
+  candidata solo con los objetos de las celdas que toca, en vez de con todos.
+- **Franja de la pared (`wall_strip`).** Un objeto de pared solo se desliza a lo largo de su pared, así que
+  solo puede chocar con los objetos que cruzan su franja. Esos objetos (los tramos ocupados de la pared) se
+  copian a un `FixedArray` del tamaño justo y la colocación en la pared solo mira esos.
 
-**Por qué no está integrado.** La pantalla del proyecto ya no muestra el botón de layout (decisión 36), así que
-la integración no se vería en la demo y arriesgaba un motor ya probado. Se dejó para después de la entrega.
+Los dos son **prefiltros exactos**: solo descartan objetos que no pueden chocar, y la comprobación final
+(`overlaps`) no cambia. Por eso las posiciones, los motivos de descarte y el presupuesto de trabajo son los
+mismos que antes. Se comprobó contra la versión anterior en 1500 escenas aleatorias (23 783 comparaciones
+idénticas) y, en las pruebas, contra un recorrido por fuerza bruta.
 
 **Pruebas.** `test_fixed_array.py`: 29 casos, con 5 semillas × 5000 operaciones aleatorias contra una `list`
-de referencia, más los casos límite.
+de referencia, más los casos límite. `test_arrangement_cells.py`: 10 casos de la integración.
 
-### 2.7 `CircularDoublyLinkedList`: creada y probada, sin integrar
+### 2.7 `CircularDoublyLinkedList`: las paredes de `Room` como anillo
 
 **Clase.** Un anillo doblemente enlazado: el último nodo enlaza con la cabeza y `head.prev` es el último.
 "El siguiente del último" es el primero sin calcular ningún módulo.
@@ -251,29 +254,51 @@ de referencia, más los casos límite.
 - `pairs()` devuelve las aristas consecutivas, incluida la de cierre.
 - `rotate(k)` se comporta como `deque.rotate`.
 
-**Dónde se integraría.** Dentro de `Room`, en `app/geometry/room.py`. Hoy `self._vertices` es una `list` y el
-cierre del polígono usa `(i + 1) % n`.
-- El anillo representa de forma natural un polígono cerrado: las paredes serían `pairs()`.
-- Insertar o borrar un vértice junto a otro sería O(1) con el nodo.
-- `Room` pondría la regla del mínimo de 3 nodos.
-- La API pública de `Room` no cambiaría: `vertices`, `move_vertex`, `insert_vertex`, `remove_vertex`,
-  `set_vertices`, `to_record` y `vertices_json`. La base de datos seguiría guardando una lista JSON.
-- La prueba de aceptación: la sala de 21 vértices (decisión 12) y todas las pruebas de `room` deben seguir
-  pasando.
+**Dónde se usa.** `Room` (`app/geometry/room.py`) guarda sus vértices en el anillo, no en una `list`.
+- La pared `i` va del vértice `i` al siguiente. El área, `contains_point` y `contains_rectangle` recorren las
+  paredes con `pairs()`, sin `(i + 1) % n`.
+- `walls()` da todas las paredes y `neighbor_walls(i)` la pared anterior y la siguiente (con `node.prev` y
+  `node.next`, dando la vuelta en los extremos).
+- Mover, insertar o borrar un vértice cambia el anillo en su sitio (valor del nodo, `insert_after`,
+  `remove`). Si la forma nueva no es válida, se deshace el cambio en el anillo antes de lanzar el error, así
+  que la sala queda igual.
+- `Room` pone la regla del mínimo de 3 vértices. La API pública no cambió y la base de datos sigue guardando
+  una lista JSON.
 
-**Por qué no está integrado.** `Room` es el núcleo de la geometría y lo usa todo el backend. Se integra al
-final, con su propio OK, para no arriesgar la entrega.
+Los resultados son idénticos bit a bit a los de la versión con `list`: se comprobó en 3000 salas aleatorias
+con ediciones (33 576 comparaciones), y la sala de 21 vértices (decisión 12) sigue pasando.
 
 **Pruebas.** `test_circular_doubly_linked_list.py`: 39 casos contra `collections.deque`, con 5000 operaciones
-aleatorias por semilla, más rotaciones, nodos ajenos, capacidad, uno y dos elementos.
+aleatorias por semilla, más rotaciones, nodos ajenos, capacidad, uno y dos elementos. `test_room_ring.py`: 10
+casos de la integración.
 
-### 2.8 Cómo se demuestra
+### 2.8 `NaryTree`: grupos y proyectos como árbol de dos niveles
+
+**Clase.** Un árbol con raíz en el que cada nodo tiene cualquier número de hijos, en el orden en que se
+añadieron. Cada nodo guarda su primer y su último hijo, y los hijos forman una lista doblemente enlazada de
+hermanos (`prev_sibling`, `next_sibling`).
+- `add_child` (al final) es O(1). `remove(nodo)` desengancha el subárbol en O(1) y suelta sus k nodos: O(k).
+- `walk` recorre en profundidad en **preorden** (padre antes que sus hijos) con una `LinkedStack` propia en
+  vez de recursión, así que un árbol muy profundo no agota la pila de Python. `count` y `depth_first` usan
+  ese recorrido: O(k).
+
+**Dónde se usa.** `GET /groups` (`app/routers/groups.py` y `app/services/project_tree.py`). La raíz es la
+cuenta, sus hijos son los grupos (del más antiguo al más nuevo) y los hijos de cada grupo son sus proyectos.
+Un solo recorrido en profundidad lista los grupos y cuenta los proyectos de cada uno. Sustituye al
+`GROUP BY` de SQL y la respuesta es la misma: mismo orden, los grupos vacíos con 0 y los proyectos sin
+grupo sin contar.
+
+**Pruebas.** `test_nary_tree.py`: 20 casos, con 5 semillas × 3000 operaciones aleatorias contra un modelo de
+referencia con `dict` y `list`, más los casos límite (capacidad, nodos ajenos, árbol de 20 000 niveles y de
+5000 hijos). `test_project_tree.py`: 5 casos de la integración.
+
+### 2.9 Cómo se demuestra
 
 Desde la carpeta del backend:
 
 ```powershell
-.venv\Scripts\python.exe -m pytest -q app/tests/test_linked_queue.py app/tests/test_doubly_linked_list.py app/tests/test_linked_stack.py app/tests/test_lru_cache.py app/tests/test_fixed_array.py app/tests/test_circular_doubly_linked_list.py
-.venv\Scripts\python.exe -m pytest -q app/tests/test_rate_limit_queue.py app/tests/test_coherence_cache.py app/tests/test_room_undo.py
+.venv\Scripts\python.exe -m pytest -q app/tests/test_linked_queue.py app/tests/test_doubly_linked_list.py app/tests/test_linked_stack.py app/tests/test_lru_cache.py app/tests/test_fixed_array.py app/tests/test_circular_doubly_linked_list.py app/tests/test_nary_tree.py
+.venv\Scripts\python.exe -m pytest -q app/tests/test_rate_limit_queue.py app/tests/test_coherence_cache.py app/tests/test_room_undo.py app/tests/test_arrangement_cells.py app/tests/test_room_ring.py app/tests/test_project_tree.py
 ```
 
 En la aplicación desplegada:
@@ -320,15 +345,15 @@ En la aplicación desplegada:
 
 ---
 
-## 5. Cifras de las pruebas (`dev`; backend `f156b17` el 2026-11-08, frontend `b5bc525` el 2026-11-07)
+## 5. Cifras de las pruebas (`dev`; backend `9a9f09f` el 2026-11-08, frontend `b5bc525` el 2026-11-07)
 
 | Qué | Resultado |
 |---|---|
-| Backend, suite completa (`pytest`, Python 3.14.7 local) | **848 passed** en 56,31 s |
+| Backend, suite completa (`pytest`, Python 3.14.7 local) | **893 passed** en 60,74 s |
 | Backend, `ruff check` | All checks passed |
-| Pruebas de las seis clases de `app/structures/` | **156**: cola 23, lista doble 25, pila 20, LRU 20, arreglo 29, anillo 39 |
-| Pruebas de las integraciones | **53**: cola en el limitador 7, LRU de coherencia 12, Deshacer de la sala 34 |
-| Operaciones aleatorias | 5000 por semilla, comparadas tras cada paso con `deque`, `list` u `OrderedDict` de referencia y con `check_invariants()` |
+| Pruebas de las siete clases de `app/structures/` | **176**: cola 23, lista doble 25, pila 20, LRU 20, arreglo 29, anillo 39, árbol 20 |
+| Pruebas de las integraciones | **78**: cola en el limitador 7, LRU de coherencia 12, Deshacer de la sala 34, arreglo en la colocación 10, anillo en `Room` 10, árbol en los grupos 5 |
+| Operaciones aleatorias | 5000 por semilla (3000 en el árbol), comparadas tras cada paso con `deque`, `list`, `dict` u `OrderedDict` de referencia y con `check_invariants()` |
 | Frontend (`vitest`) | **22 archivos, 219 passed** |
 
 ---
@@ -356,10 +381,10 @@ En la aplicación desplegada:
 - **Acciones del chat** (`TAREA-CHAT-ACCIONES.md`): que el asistente proponga cambios en la sala (añadir,
   mover o quitar objetos) y el usuario los confirme, con su propio Deshacer.
 - **Proyectos derivados en árbol** (`TAREA-RENOMBRAR.md`, sección 5): cada versión de un proyecto apunta a la
-  anterior (`derivado_de`). Un árbol n-ario de versiones con un resumen de cambios calculado sin IA y una
-  vista de historial que recorra el árbol.
-- **Integrar `FixedArray`** como prefiltro espacial del layout (2.6).
-- **Integrar `CircularDoublyLinkedList`** dentro de `Room` (2.7).
+  anterior (`derivado_de`). Un árbol n-ario de versiones (se puede reutilizar `NaryTree`) con un resumen de
+  cambios calculado sin IA y una vista de historial que recorra el árbol.
+- **Celdas del suelo también en el layout** (`app/geometry/layout.py`): hoy `FloorCells` solo se usa al
+  colocar un objeto (2.6), no en la búsqueda de huecos de `generate_layout`.
 - **Persistir el historial de deshacer** en la base de datos para que sobreviva a un reinicio, y añadir
   Rehacer.
 - **Traducir al español** los comentarios en inglés que quedan en `app/utils/rate_limit.py` (decisión 37), y
