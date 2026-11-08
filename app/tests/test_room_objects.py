@@ -18,6 +18,7 @@ from app.services.room_objects import (
     RoomObjectError,
     as_object,
     delete_object,
+    move_to_wall,
     place_object,
     update_object,
 )
@@ -393,3 +394,91 @@ async def test_a_failed_commit_rolls_back_and_keeps_the_stack(db_sessions, monke
     assert caught.value.status_code == 503
     assert store.depth("user-a", room_id) == 1
     assert await stored(db_sessions, room_id) == []
+
+
+# --- Mover a una pared (CONTRATO-FASE2.md, 2.3) ----------------------------------------------------------
+
+
+async def moved_to_wall(db_sessions, room_id, item_id, wall):
+    """move_to_wall (núcleo sin commit) y el commit, como hará el chat."""
+    async with db_sessions() as session:
+        row = await load(session, room_id)
+        result = move_to_wall(row, item_id, wall)
+        await session.commit()
+        return result
+
+
+BED = piece("Cama", 1.0, 2.0, 0.5, 3.4, 1.0)  # x de 2,9 a 3,9 y z de 0 a 2, contra la pared del fondo
+
+
+async def test_a_picture_moved_to_another_wall_keeps_its_width_and_height(db_sessions):
+    room_id = await new_room(db_sessions)
+    await run(db_sessions, room_id, place_object, **PICTURE)
+    (picture,) = await stored(db_sessions, room_id)
+
+    result = await moved_to_wall(db_sessions, room_id, picture.id, "back")
+
+    assert (result.wall, result.adjusted) == ("back", False)
+    (moved,) = await stored(db_sessions, room_id)
+    assert (moved.ancho, moved.profundidad) == pytest.approx((0.6, 0.05))
+    assert (moved.posicion_x, moved.posicion_z, moved.posicion_y) == pytest.approx((2, 0.025, 1.3))
+
+
+async def test_a_loose_sofa_goes_against_the_wall_with_its_long_side(db_sessions):
+    room_id = await new_room(db_sessions, pieces=[piece("Sofá", 2.0, 0.9, 0.85, 2, 1.5)])
+    (sofa,) = await stored(db_sessions, room_id)
+
+    result = await moved_to_wall(db_sessions, room_id, sofa.id, "left")
+
+    assert result.wall == "left"
+    (moved,) = await stored(db_sessions, room_id)
+    assert (moved.ancho, moved.profundidad) == pytest.approx((0.9, 2.0))
+    assert (moved.posicion_x, moved.posicion_z, moved.posicion_y) == pytest.approx((0.45, 1.5, 0))
+
+
+async def test_a_floor_object_moved_to_a_wall_slides_and_never_climbs(db_sessions):
+    room_id = await new_room(db_sessions, pieces=[BED, piece("Sofá", 2.0, 0.9, 0.85, 1.5, 2.5)])
+    bed, sofa = await stored(db_sessions, room_id)
+
+    result = await moved_to_wall(db_sessions, room_id, sofa.id, "back")
+
+    assert (result.wall, result.adjusted) == ("back", True)
+    _, moved = await stored(db_sessions, room_id)
+    assert moved.posicion_y == 0
+    assert not overlaps(as_object(moved), as_object(bed))
+
+
+async def test_patch_with_a_wall_never_puts_a_floor_object_on_top_of_another(db_sessions):
+    room_id = await new_room(db_sessions, pieces=[BED, piece("Mesa", 0.6, 0.6, 0.7, 0.5, 2.5)])
+    bed, table = await stored(db_sessions, room_id)
+
+    target = ItemPlacement(x=3.0, y=0, wall="back")  # encima de la cama
+    result = await run(db_sessions, room_id, update_object, table.id, position=target)
+
+    assert result.adjusted is True
+    _, moved = await stored(db_sessions, room_id)
+    assert moved.posicion_y == 0
+    assert not overlaps(as_object(moved), as_object(bed))
+
+
+async def test_moving_to_a_wall_is_refused_without_changes(db_sessions):
+    wide = piece("Tarima", 4, 0.5, 0.3, 2, 0.25)
+    room_id = await new_room(db_sessions, pieces=[wide, piece("Sofá", 2.0, 0.9, 0.85, 2, 2)])
+    table_piece = piece("Mesa", 1, 1, 0.7, 1, 1)
+    l_room = await new_room(db_sessions, vertices=L_ROOM, width=4, depth=4, pieces=[table_piece])
+    _, sofa = await stored(db_sessions, room_id)
+    (table,) = await stored(db_sessions, l_room)
+
+    with pytest.raises(RoomObjectError) as full:
+        await moved_to_wall(db_sessions, room_id, sofa.id, "back")
+    with pytest.raises(RoomObjectError) as not_rectangle:
+        await moved_to_wall(db_sessions, l_room, table.id, "left")
+    with pytest.raises(RoomObjectError) as foreign:
+        await moved_to_wall(db_sessions, room_id, table.id, "left")
+
+    no_space = "No hay sitio para «Sofá» en la pared del fondo."
+    assert (full.value.status_code, full.value.message) == (409, no_space)
+    assert (not_rectangle.value.status_code, not_rectangle.value.message) == (422, WALL_NEEDS_RECTANGLE)
+    assert foreign.value.status_code == 404
+    _, kept = await stored(db_sessions, room_id)
+    assert (kept.posicion_x, kept.posicion_z) == (2, 2)

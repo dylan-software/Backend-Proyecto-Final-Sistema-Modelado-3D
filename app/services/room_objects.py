@@ -266,8 +266,10 @@ def _move(current, size, position, room, others):
         return result, reason, requested, None
     _require_rectangle(room)
     along, thickness = wall_extents(width, depth, position.wall)
-    item = replace(requested, width_m=along, depth_m=thickness, kind="wall")
-    result, reason = place_on_wall(item, room, position.wall, others, centered=False)
+    item = replace(requested, width_m=along, depth_m=thickness)
+    # Un objeto de suelo se arrima a la pared en el suelo: nunca se sube encima de otro mueble.
+    stack = current.kind == "wall"
+    result, reason = place_on_wall(item, room, position.wall, others, centered=False, stack=stack)
     # La coordenada perpendicular a la pared la fija la pared: no cuenta como ajuste.
     skip = "z" if position.wall in ("back", "front") else "x"
     return result, reason, requested, skip
@@ -308,6 +310,50 @@ def change_object(row, item_id, *, name=None, width_cm=None, depth_cm=None, heig
     piece.nombre = new_name
     _write(piece, result)
     return PlacementResult(piece, attached_wall(result, room), not _same_place(result, requested, skip))
+
+
+# --- Mover a una pared (acción move_object del chat) --------------------------------------------------------
+
+
+def _along_and_thickness(current, room):
+    """(ancho a lo largo de la pared, grosor) de un objeto que se va a pegar a otra pared.
+
+    Si ya está pegado a una pared, conserva lo que iba a lo largo de ella (un cuadro sigue siendo igual
+    de ancho); si no, el lado largo va contra la pared (un sofá de espaldas a ella).
+    """
+    side = attached_wall(current, room)
+    if side is not None:
+        return wall_extents(current.width_m, current.depth_m, side)
+    return max(current.width_m, current.depth_m), min(current.width_m, current.depth_m)
+
+
+def move_to_wall(row, item_id, wall):
+    """Pega un objeto de row a la pared wall, centrado, sin commit.
+
+    Uno de pared conserva su altura; uno de suelo se arrima en el suelo y, si choca, solo se desliza a
+    lo largo de la pared (nunca se sube encima de otro mueble).
+
+    Returns:
+        PlacementResult (adjusted si no quedó en el centro de la pared).
+
+    Raises:
+        RoomObjectError: 404 el objeto no es de esta sala; 409 no hay sitio en esa pared; 422 la sala
+            no es rectangular. En ese caso row no cambia.
+    """
+    piece = find_piece(row, item_id)
+    room = room_shape(row)
+    _require_rectangle(room)
+    current = as_object(piece)
+    along, thickness = _along_and_thickness(current, room)
+    item = replace(current, width_m=along, depth_m=thickness)
+    others = [as_object(other) for other in row.muebles if other is not piece]
+    stack = current.kind == "wall"
+    result, reason = place_on_wall(item, room, wall, others, stack=stack)
+    if result is None:
+        raise _no_space(piece.nombre, reason, WALL_LABELS[wall])
+    ideal, _ = place_on_wall(item, room, wall, [], stack=stack)
+    _write(piece, result)
+    return PlacementResult(piece, attached_wall(result, room), not _same_place(result, ideal))
 
 
 # --- Borrar ---------------------------------------------------------------------------------------------

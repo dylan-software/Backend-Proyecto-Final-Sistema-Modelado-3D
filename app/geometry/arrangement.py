@@ -254,9 +254,13 @@ def _place_wall(item, placed, room):
     return _settle_on_wall(*snapped, placed, room)
 
 
-def _settle_on_wall(item, axis, placed, room):
-    """Un objeto ya pegado a su pared: sube sobre los muebles y se desliza si choca. (objeto, motivo)."""
-    if not is_door(item):
+def _settle_on_wall(item, axis, placed, room, stack=True):
+    """Un objeto ya pegado a su pared: sube sobre los muebles (si stack) y se desliza si choca.
+
+    Returns:
+        (objeto, None) o (None, motivo).
+    """
+    if stack and not is_door(item):
         raised = _raise_above_furniture(item, placed, room)
         if raised is None:
             return None, overlap_reason(_first_blocker_name(item, placed))
@@ -340,13 +344,15 @@ def attached_wall(item, room):
     return next((side for side in WALL_SIDES if abs(gaps[side]) <= ATTACH_TOLERANCE_M), None)
 
 
-def place_on_wall(item, room, side, placed, centered=True):
+def place_on_wall(item, room, side, placed, centered=True, stack=True):
     """Pega un objeto a la pared side de una sala rectangular.
 
     item.width_m es su ancho a lo largo de la pared y depth_m su grosor (como los da la IA). Con
     centered=True queda en el centro de la pared; si no, conserva su coordenada a lo largo de ella,
     acotada al tramo. La base (elevation_m) se acota entre el suelo y el techo; la puerta va al suelo.
-    Si choca, sube sobre los muebles de suelo y se desliza a lo largo de la pared (como arrange_objects).
+    Si choca, sube sobre los muebles de suelo (solo con stack=True) y se desliza a lo largo de la pared
+    (como arrange_objects). Un mueble de suelo arrimado a la pared usa stack=False: nunca se sube
+    encima de otro.
 
     Args:
         room: app.geometry.room.Room rectangular.
@@ -373,7 +379,7 @@ def place_on_wall(item, room, side, placed, centered=True):
     if snapped is None:
         return None, REASON_OUTSIDE
     others = [_moved(other, -origin_x, -origin_z) for other in placed]
-    result, reason = _settle_on_wall(*snapped, others, box)
+    result, reason = _settle_on_wall(*snapped, others, box, stack)
     if result is None:
         return None, reason
     return _moved(result, origin_x, origin_z), None
