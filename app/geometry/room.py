@@ -1,9 +1,10 @@
-"""Room floor plan as an irregular, editable polygon (port of the Node src/domain/Room.ts).
+"""Planta de la habitación como polígono irregular y editable (port de src/domain/Room.ts del Node).
 
-Coordinates are meters. The polygon lives in the floor plane: its x is the room's x axis and its y is
-the room's z axis (depth); the room's height runs along the 3D y axis, which points up.
+Las coordenadas están en metros. El polígono vive en el plano del suelo: su x es el eje x de la sala y su y
+es el eje z de la sala (la profundidad); la altura de la sala va por el eje y del 3D, que apunta hacia arriba.
 
-Doors and windows are not ported: nothing persists them yet, so the clear-path check is skipped.
+Puertas y ventanas no se portan: todavía no se guardan en ningún sitio, así que se omite la comprobación
+del paso libre.
 
 Los vértices de Room se guardan en un anillo (CircularDoublyLinkedList de app.structures): la pared i va
 del vértice i al siguiente, y la siguiente del último vértice es el primero sin calcular ningún módulo.
@@ -14,16 +15,16 @@ from dataclasses import dataclass
 
 from app.structures import CircularDoublyLinkedList
 
-# Polygons with a smaller area are treated as degenerate (collinear or collapsed vertices).
+# Los polígonos con un área menor se consideran degenerados (vértices colineales o colapsados).
 MIN_AREA_M2 = 0.01
 
-# Slack for the orientation test, in m². Cross products of room-scale coordinates are exact to
-# ~1e-15, so 1e-12 only absorbs rounding while still telling apart points a micrometer off a line.
+# Holgura de la prueba de orientación, en m². Los productos cruzados con coordenadas de una sala son exactos
+# hasta ~1e-15, así que 1e-12 solo absorbe el redondeo y aún distingue puntos a un micrómetro de una recta.
 _COLLINEAR_EPSILON = 1e-12
 
 
 class RoomError(ValueError):
-    """The requested shape is not a valid room (the API answers 422)."""
+    """La forma pedida no es una habitación válida (la API responde 422)."""
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,7 @@ def _to_point(value):
 
 
 def _signed_area(vertices):
-    """Shoelace formula: positive for counter-clockwise vertices, negative for clockwise."""
+    """Fórmula del área de Gauss (shoelace): positiva en sentido antihorario, negativa en horario."""
     return _signed_area_of_edges((a, vertices[(i + 1) % len(vertices)]) for i, a in enumerate(vertices))
 
 
@@ -78,7 +79,7 @@ def _ring_of(points):
 
 
 def _orientation(p, q, r):
-    """Sign of the cross product (q - p) x (r - p): 1 left turn, -1 right turn, 0 collinear."""
+    """Signo del producto cruzado (q - p) x (r - p): 1 giro a la izquierda, -1 a la derecha, 0 colineales."""
     cross = (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x)
     if abs(cross) <= _COLLINEAR_EPSILON:
         return 0
@@ -86,7 +87,7 @@ def _orientation(p, q, r):
 
 
 def _on_segment(p, q, r):
-    """For collinear p, q, r: whether r lies on the closed segment pq."""
+    """Con p, q y r colineales: si r está en el segmento cerrado pq."""
     return (
         min(p.x, q.x) - 1e-12 <= r.x <= max(p.x, q.x) + 1e-12
         and min(p.y, q.y) - 1e-12 <= r.y <= max(p.y, q.y) + 1e-12
@@ -94,7 +95,7 @@ def _on_segment(p, q, r):
 
 
 def _segments_touch(a, b, c, d):
-    """Whether the closed segments ab and cd share at least one point (crossing or touching)."""
+    """Si los segmentos cerrados ab y cd comparten al menos un punto (se cruzan o se tocan)."""
     o1, o2 = _orientation(a, b, c), _orientation(a, b, d)
     o3, o4 = _orientation(c, d, a), _orientation(c, d, b)
     if o1 != o2 and o3 != o4 and 0 not in (o1, o2, o3, o4):
@@ -108,18 +109,18 @@ def _segments_touch(a, b, c, d):
 
 
 def _segment_crosses_open_rectangle(a, b, min_x, min_y, max_x, max_y):
-    """Whether segment ab passes through the interior of the rectangle (its boundary does not count).
+    """Si el segmento ab pasa por el interior del rectángulo (su borde no cuenta).
 
-    Liang-Barsky clipping keeps the part of the segment inside the closed rectangle. That part lies
-    either on one side of the rectangle (touching only) or, except for its endpoints, in the interior,
-    so testing its midpoint is enough.
+    El recorte de Liang-Barsky se queda con la parte del segmento dentro del rectángulo cerrado. Esa parte
+    está o bien sobre un lado del rectángulo (solo lo toca) o bien, salvo sus extremos, en el interior, así
+    que basta con probar su punto medio.
     """
     dx, dy = b.x - a.x, b.y - a.y
     t0, t1 = 0.0, 1.0
     for p, q in ((-dx, a.x - min_x), (dx, max_x - a.x), (-dy, a.y - min_y), (dy, max_y - a.y)):
         if p == 0:
             if q < 0:
-                return False  # parallel to this side and outside it
+                return False  # paralelo a este lado y fuera de él
             continue
         t = q / p
         if p < 0:
@@ -135,7 +136,7 @@ def _segment_crosses_open_rectangle(a, b, min_x, min_y, max_x, max_y):
 
 
 def _without_repeated_vertices(vertices):
-    """Drop consecutive duplicates (including last == first): they form zero-length edges only."""
+    """Quita los duplicados consecutivos (también último == primero): solo forman aristas de longitud 0."""
     ring = []
     for point in vertices:
         if not ring or point != ring[-1]:
@@ -146,27 +147,27 @@ def _without_repeated_vertices(vertices):
 
 
 def _find_self_intersection(vertices):
-    """Return a description of the first self-intersection, or None if the polygon is simple.
+    """Devuelve la descripción de la primera autointersección, o None si el polígono es simple.
 
-    Zero-length edges (repeated consecutive vertices) are ignored. Two non-adjacent edges must not
-    share any point, so a vertex resting on a non-adjacent edge is rejected too. Adjacent edges only
-    share their common vertex; if they fold back over each other (collinear, opposite direction),
-    that is also an intersection.
+    Las aristas de longitud 0 (vértices consecutivos repetidos) se ignoran. Dos aristas no adyacentes no
+    pueden compartir ningún punto, así que también se rechaza un vértice apoyado en una arista no adyacente.
+    Las aristas adyacentes solo comparten su vértice común; si se doblan una sobre otra (colineales y en
+    sentido contrario), eso también es una intersección.
     """
     ring = _without_repeated_vertices(vertices)
     n = len(ring)
     edges = [(ring[i], ring[(i + 1) % n]) for i in range(n)]
     for i in range(n):
         a, b = edges[i]
-        # The next edge b -> c shares vertex b; it folds back over this one if it is collinear and
-        # points the opposite way. Collinear and the same way is just a redundant vertex.
+        # La arista siguiente b -> c comparte el vértice b; se dobla sobre esta si es colineal y va en
+        # sentido contrario. Colineal y en el mismo sentido es solo un vértice redundante.
         c = edges[(i + 1) % n][1]
         backwards = (b.x - a.x) * (c.x - b.x) + (b.y - a.y) * (c.y - b.y) < 0
         if _orientation(a, b, c) == 0 and backwards:
             return f"edges {i} and {(i + 1) % n} overlap"
         for j in range(i + 2, n):
             if i == 0 and j == n - 1:
-                continue  # edges 0 and n-1 are adjacent through vertex 0
+                continue  # las aristas 0 y n-1 son adyacentes por el vértice 0
             if _segments_touch(a, b, *edges[j]):
                 return f"edges {i} and {j} intersect"
     return None
@@ -188,10 +189,10 @@ def _validate_height(height_m):
 
 
 class Room:
-    """Irregular polygon (not necessarily a rectangle) at real metric scale, editable after creation.
+    """Polígono irregular (no necesariamente un rectángulo) a escala métrica real, editable tras crearlo.
 
-    Every mutation validates the new shape before replacing the current one, so a rejected edit
-    leaves the room unchanged.
+    Cada cambio valida la forma nueva antes de sustituir la actual, así que una edición rechazada deja la
+    sala sin cambios.
 
     Los vértices viven en un anillo (CircularDoublyLinkedList); la pared i es (vértice i, siguiente).
     Costes (n = vértices):
@@ -212,16 +213,16 @@ class Room:
 
     @classmethod
     def from_record(cls, vertices, ancho, profundidad, alto):
-        """Room stored in the habitaciones table.
+        """Sala guardada en la tabla habitaciones.
 
-        Rooms created by /analyze have no vertices: they are the rectangle [0, ancho] x [0, profundidad].
+        Las salas creadas por /analyze no tienen vértices: son el rectángulo [0, ancho] x [0, profundidad].
         """
         if vertices is None:
             vertices = [(0, 0), (ancho, 0), (ancho, profundidad), (0, profundidad)]
         return cls(vertices, alto)
 
     def to_record(self):
-        """Column values for the habitaciones table: ancho/profundidad are the bounding box."""
+        """Valores de las columnas de la tabla habitaciones: ancho y profundidad son la caja delimitadora."""
         box = self.bounding_box()
         return {
             "vertices": self.vertices_json(),
@@ -267,7 +268,7 @@ class Room:
         return (node.prev.value, node.value), (node.next.value, node.next.next.value)
 
     def contains_point(self, x, y):
-        """Point-in-polygon by ray casting, so callers respect the real shape, not its bounding box."""
+        """Punto en polígono por lanzamiento de rayos: respeta la forma real, no su caja delimitadora."""
         inside = False
         # Cada pared (vj, vi) del anillo; el orden de las aristas no cambia el resultado (solo alterna).
         for vj, vi in self._ring.pairs():
@@ -276,13 +277,14 @@ class Room:
         return inside
 
     def contains_rectangle(self, x, y, width, depth):
-        """Whether the axis-aligned rectangle [x, x + width] x [y, y + depth] lies inside the polygon.
+        """Si el rectángulo alineado con los ejes [x, x + width] x [y, y + depth] está dentro del polígono.
 
-        The four corners being inside is not enough in a concave room: a long rectangle can have all
-        its corners in the floor and still cross a notch between them. If no wall passes through the
-        rectangle's interior, that interior is either entirely inside the room or entirely outside, so
-        its center decides. Walls along its edges (a piece pushed against a wall) do not count, and
-        unlike a corner test, the center is never on a wall, where ray casting is ambiguous.
+        Que las cuatro esquinas estén dentro no basta en una sala cóncava: un rectángulo largo puede tener
+        todas sus esquinas en el suelo y aun así cruzar una muesca entre ellas. Si ninguna pared pasa por el
+        interior del rectángulo, ese interior está o todo dentro de la sala o todo fuera, así que decide su
+        centro. Las paredes a lo largo de sus lados (un mueble pegado a una pared) no cuentan y, a diferencia
+        de una prueba por esquinas, el centro nunca está sobre una pared, donde el lanzamiento de rayos es
+        ambiguo.
         """
         if any(
             _segment_crosses_open_rectangle(a, b, x, y, x + width, y + depth) for a, b in self._ring.pairs()
@@ -290,7 +292,7 @@ class Room:
             return False
         return self.contains_point(x + width / 2, y + depth / 2)
 
-    # --- Mutations: the user can edit the room surface after the scan ---------------------------
+    # --- Cambios: el usuario puede editar la superficie de la sala después del escaneo ----------
 
     def _check_index(self, index, operation):
         if not 0 <= index < len(self._ring):
@@ -305,13 +307,13 @@ class Room:
             raise
 
     def set_vertices(self, vertices):
-        """Replace the whole shape at once (re-scan or full manual redraw)."""
+        """Sustituye toda la forma de una vez (nuevo escaneo o redibujado manual completo)."""
         points = [_to_point(v) for v in vertices]
         _validate(points)
         self._ring = _ring_of(points)
 
     def move_vertex(self, index, point):
-        """Move one vertex (drag-to-edit in the UI) without touching the others."""
+        """Mueve un vértice (arrastrar para editar en la interfaz) sin tocar los demás."""
         self._check_index(index, "move_vertex")
         point = _to_point(point)
         node = self._ring.node_at(index)
@@ -324,7 +326,7 @@ class Room:
         self._validate_or_undo(undo)
 
     def insert_vertex(self, after_index, point):
-        """Insert a vertex between after_index and the next one (splits an edge)."""
+        """Inserta un vértice entre after_index y el siguiente (parte una arista en dos)."""
         self._check_index(after_index, "insert_vertex")
         point = _to_point(point)
         # Tras el último vértice, el nodo nuevo queda al final (antes de la cabeza): la pared que cierra.
@@ -332,7 +334,7 @@ class Room:
         self._validate_or_undo(lambda: self._ring.remove(node))
 
     def remove_vertex(self, index):
-        """Remove a vertex (simplifies the shape); a room never drops below a triangle."""
+        """Quita un vértice (simplifica la forma); una sala nunca baja de un triángulo."""
         if len(self._ring) <= 3:
             raise RoomError("remove_vertex: a room must keep at least 3 vertices")
         self._check_index(index, "remove_vertex")
