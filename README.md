@@ -186,9 +186,17 @@ lugar, `app/geometry/units.py`.
     con su motivo; uno que se sale de la sala hasta 10 cm se mete dentro; se aceptan como mucho 10.
   - Coherencia espacial (`app/geometry/arrangement.py`, determinista; los solapes ya NO se aceptan):
     - Puertas, ventanas, espejos y cuadros (`kind="wall"`) se pegan a la pared más cercana, paralelos
-      a ella; en una pared vertical se intercambian ancho y fondo. La puerta (por su nombre: "puerta" o
-      "door") va al suelo; el resto, entre el suelo y el techo, y por encima del mueble en el que se
-      metan (el espejo sobre la cama).
+      a ella, a 0 cm (su cara trasera sobre la pared, sin atravesarla) y dentro de su tramo; en una
+      pared vertical se intercambian ancho y fondo. La puerta (por su nombre: "puerta" o "door") va al
+      suelo; el resto, entre el suelo y el techo, y por encima del mueble en el que se metan (el espejo
+      sobre la cama).
+    - Muebles que van contra una pared (por palabras completas del nombre: armario, ropero, cama,
+      litera, tocador, escritorio, estante, estantería, librero y sus equivalentes en inglés): si están
+      a menos de 30 cm de la pared más cercana, se arriman a ella sin girarlos; la cama, solo por el
+      cabecero (una pared de los extremos de su lado largo). Si ahí chocan, se deslizan a lo largo de esa
+      pared hasta el hueco libre más cercano (el armario junto a la puerta); si no hay hueco, siguen la
+      regla general de abajo. Uno pequeño que iría encima de otro mueble no se arrima. Si arrimar hace
+      que se descarte algún objeto que sin arrimar cabía, se usa la distribución sin arrimar.
     - Los objetos de suelo se procesan de mayor a menor área. Uno pequeño (menos de 0,6 m de alto y del
       40 % del área) con el centro dentro de otro que está en el suelo va encima (el portátil sobre la
       cama); nunca sobre algo ya apilado. Si no, se desplaza lo mínimo a un lado del que estorba,
