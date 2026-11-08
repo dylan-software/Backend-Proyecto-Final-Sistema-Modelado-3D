@@ -340,7 +340,7 @@ async def test_delete_removes_the_object(db_sessions):
     assert [p.nombre for p in await stored(db_sessions, room_id)] == ["Silla"]
 
 
-# --- Pila de deshacer la foto ---------------------------------------------------------------------------
+# --- Pila de Deshacer de la sala (CONTRATO-FASE2.md) -------------------------------------------------------
 
 
 def store_with_photo(room_id):
@@ -350,21 +350,22 @@ def store_with_photo(room_id):
     return store
 
 
-async def test_every_saved_change_empties_the_photo_undo_stack(db_sessions):
+async def test_every_saved_change_stacks_the_room_as_it_was(db_sessions):
     room_id = await new_room(db_sessions)
-
     store = store_with_photo(room_id)
+
     await run(db_sessions, room_id, place_object, **TABLE, undo_store=store)
-    assert store.depth("user-a", room_id) == 0
-
     (table,) = await stored(db_sessions, room_id)
-    store = store_with_photo(room_id)
     await run(db_sessions, room_id, update_object, table.id, name="Mesa 2", undo_store=store)
-    assert store.depth("user-a", room_id) == 0
-
-    store = store_with_photo(room_id)
     await run(db_sessions, room_id, delete_object, table.id, undo_store=store)
-    assert store.depth("user-a", room_id) == 0
+
+    assert store.depth("user-a", room_id) == 4
+    deleted, renamed, added, photo = (store.pop("user-a", room_id) for _ in range(4))
+    assert [copy.change for copy in (deleted, renamed, added, photo)] == ["delete", "update", "add", "photo"]
+    # Cada copia es la sala justo antes de su cambio.
+    assert [piece.nombre for piece in deleted.furniture] == ["Mesa 2"]
+    assert [piece.nombre for piece in renamed.furniture] == ["Mesa"]
+    assert added.furniture == ()
 
 
 async def test_a_refused_change_keeps_the_photo_undo_stack(db_sessions):

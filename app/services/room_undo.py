@@ -31,6 +31,11 @@ MAX_UNDO_PIECES = 2000
 # Qué cambio se hizo después de cada copia (lo que deshacerla revierte).
 CHANGES = ("photo", "chat", "add", "update", "delete", "layout", "vertices")
 
+NOTHING_TO_UNDO = (
+    "No hay ningún cambio que deshacer en esta sala. El historial de Deshacer solo se guarda mientras "
+    "el servidor está encendido y se pierde si se reinicia."
+)
+
 
 @dataclass(frozen=True, slots=True)
 class FurnitureSnapshot:

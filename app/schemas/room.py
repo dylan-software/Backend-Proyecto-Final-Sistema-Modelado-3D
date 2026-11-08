@@ -281,13 +281,18 @@ class AnalyzePhotoResponse(CamelModel):
     discarded: list[DiscardedItem]
 
 
-class PhotoUndoResponse(CamelModel):
-    """Resultado de POST /rooms/{id}/photo-undo: la sala y los muebles de antes de la última foto.
+UndoneChange = Literal["photo", "chat", "add", "update", "delete", "layout", "vertices"]
 
-    room e items tienen la misma forma que en analyze-photo; remaining dice cuántas fotos más se
-    pueden deshacer. Contrato: CONTRATO-DESHACER-FOTO.md.
+
+class RoomUndoResponse(CamelModel):
+    """Resultado de POST /rooms/{id}/undo (y de su alias photo-undo): la sala y los objetos de antes
+    del último cambio.
+
+    room e items tienen la misma forma que en analyze-photo; remaining dice cuántos cambios más se
+    pueden deshacer y undone qué cambio se deshizo. Contrato: CONTRATO-FASE2.md, sección 1.3.
     """
 
     room: RoomDetail
     items: list[RoomItem]
     remaining: int
+    undone: UndoneChange
