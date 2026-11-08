@@ -35,8 +35,8 @@ from app.schemas.room import (
     Vertex,
     VertexInsert,
 )
-from app.services.photo_undo import get_photo_undo_store
 from app.services.room_objects import RoomObjectError, delete_object, place_object, update_object
+from app.services.room_undo import get_room_undo_store
 
 router = APIRouter(prefix="/api/v1/spaces/rooms", tags=["rooms"])
 
@@ -293,7 +293,7 @@ async def add_room_item(
     body: ItemCreate,
     room_id: int = RoomId,
     session: AsyncSession = Depends(get_session),
-    undo_store=Depends(get_photo_undo_store),
+    undo_store=Depends(get_room_undo_store),
     current_user: str = Depends(get_current_user),
 ):
     """Añade un objeto a la sala; el servidor calcula su posición (CONTRATO-FASE0.md).
@@ -333,7 +333,7 @@ async def update_room_item(
     room_id: int = RoomId,
     item_id: int = ItemId,
     session: AsyncSession = Depends(get_session),
-    undo_store=Depends(get_photo_undo_store),
+    undo_store=Depends(get_room_undo_store),
     current_user: str = Depends(get_current_user),
 ):
     """Renombra, cambia medidas o mueve un objeto; el servidor revalida y devuelve la posición final.
@@ -367,7 +367,7 @@ async def delete_room_item(
     room_id: int = RoomId,
     item_id: int = ItemId,
     session: AsyncSession = Depends(get_session),
-    undo_store=Depends(get_photo_undo_store),
+    undo_store=Depends(get_room_undo_store),
     current_user: str = Depends(get_current_user),
 ):
     """Borra un objeto de la sala (204 sin cuerpo). Vacía la pila de deshacer la foto de la sala.

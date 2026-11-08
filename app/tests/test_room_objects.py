@@ -12,7 +12,6 @@ from app.geometry.arrangement import overlaps
 from app.models.space import Habitacion, MuebleSugerido
 from app.routers.errors import DatabaseFailure
 from app.schemas.room import ItemCreate, ItemPlacement, ItemUpdate
-from app.services.photo_undo import PhotoUndoStore, RoomSnapshot
 from app.services.room_objects import (
     MAX_ROOM_ITEMS,
     WALL_NEEDS_RECTANGLE,
@@ -22,6 +21,7 @@ from app.services.room_objects import (
     place_object,
     update_object,
 )
+from app.services.room_undo import RoomSnapshot, RoomUndoStore
 
 pytestmark = pytest.mark.anyio
 
@@ -344,8 +344,9 @@ async def test_delete_removes_the_object(db_sessions):
 
 
 def store_with_photo(room_id):
-    store = PhotoUndoStore()
-    store.push("user-a", room_id, RoomSnapshot(vertices=None, ancho=4, profundidad=3, alto=2.5, furniture=()))
+    store = RoomUndoStore()
+    copy = RoomSnapshot(vertices=None, ancho=4, profundidad=3, alto=2.5, furniture=(), change="photo")
+    store.push("user-a", room_id, copy)
     return store
 
 
