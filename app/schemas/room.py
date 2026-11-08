@@ -3,9 +3,12 @@
 Coordinates are meters. A vertex's y is the room's z axis (depth), as in app.geometry.room.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
+from app.schemas.photo import OBJECT_MAX_SIDE_CM, OBJECT_MIN_SIDE_CM, clean_plain_text
 from app.schemas.text import MAX_PROJECT_NAME_LENGTH, optional_description, plain_name
 
 # Sanity limits: far beyond any real room, small enough to keep the geometry checks cheap.
@@ -110,6 +113,88 @@ class RoomItem(CamelModel):
 
 class RoomItemsOut(CamelModel):
     items: list[RoomItem]
+
+
+# --- Objetos de la sala: añadir, mover o cambiar medidas (CONTRATO-FASE0.md) ------------------------
+
+WallSide = Literal["back", "front", "left", "right"]
+
+
+class StrictCamelModel(CamelModel):
+    """camelCase, campos desconocidos rechazados, sin conversiones de tipo ("2" no es 2) ni NaN/infinitos."""
+
+    model_config = ConfigDict(
+        alias_generator=to_camel, populate_by_name=True, extra="forbid", strict=True, allow_inf_nan=False
+    )
+
+
+def _object_name(value):
+    return clean_plain_text(value)
+
+
+class ItemCreate(StrictCamelModel):
+    """POST /rooms/{id}/items. Medidas en cm; widthCm a lo largo de la pared y depthCm su grosor."""
+
+    name: str
+    kind: Literal["floor", "wall"]
+    wall: WallSide | None = None
+    width_cm: float = Field(ge=OBJECT_MIN_SIDE_CM, le=OBJECT_MAX_SIDE_CM)
+    depth_cm: float = Field(ge=OBJECT_MIN_SIDE_CM, le=OBJECT_MAX_SIDE_CM)
+    height_cm: float = Field(ge=OBJECT_MIN_SIDE_CM, le=OBJECT_MAX_SIDE_CM)
+    elevation_cm: float | None = Field(None, ge=0, le=OBJECT_MAX_SIDE_CM)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def plain_name(cls, value):
+        return _object_name(value)
+
+    @model_validator(mode="after")
+    def wall_only_for_wall_objects(self):
+        if self.kind == "wall" and self.wall is None:
+            raise ValueError("un objeto de pared necesita wall: back, front, left o right")
+        if self.kind == "floor" and (self.wall is not None or self.elevation_cm is not None):
+            raise ValueError("wall y elevationCm solo se usan con kind=wall")
+        return self
+
+
+class ItemPlacement(StrictCamelModel):
+    """Posición pedida: x/y = esquina mínima en metros (como GET /items); con wall se pega a esa pared."""
+
+    x: float = Field(ge=-MAX_COORDINATE_M, le=MAX_COORDINATE_M)
+    y: float = Field(ge=-MAX_COORDINATE_M, le=MAX_COORDINATE_M)
+    elevation_m: float | None = Field(None, ge=0, le=MAX_HEIGHT_M)
+    wall: WallSide | None = None
+
+
+class ItemUpdate(StrictCamelModel):
+    """PATCH /rooms/{id}/items/{itemId}: al menos un campo. widthCm/depthCm = extensión en x/z."""
+
+    name: str | None = None
+    width_cm: float | None = Field(None, ge=OBJECT_MIN_SIDE_CM, le=OBJECT_MAX_SIDE_CM)
+    depth_cm: float | None = Field(None, ge=OBJECT_MIN_SIDE_CM, le=OBJECT_MAX_SIDE_CM)
+    height_cm: float | None = Field(None, ge=OBJECT_MIN_SIDE_CM, le=OBJECT_MAX_SIDE_CM)
+    position: ItemPlacement | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def plain_name(cls, value):
+        return _object_name(value)
+
+    @model_validator(mode="after")
+    def at_least_one_field(self):
+        values = (self.name, self.width_cm, self.depth_cm, self.height_cm, self.position)
+        if all(value is None for value in values):
+            raise ValueError("indica al menos un campo: name, widthCm, depthCm, heightCm o position")
+        return self
+
+
+class PlacedItemResponse(CamelModel):
+    """Resultado de POST y PATCH: el objeto guardado, la pared a la que quedó pegado (o null) y si la
+    posición final difiere de la pedida."""
+
+    item: RoomItem
+    wall: WallSide | None
+    adjusted: bool
 
 
 class LayoutConstraints(CamelModel):
