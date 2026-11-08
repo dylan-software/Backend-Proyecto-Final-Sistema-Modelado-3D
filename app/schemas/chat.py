@@ -18,6 +18,16 @@ class ChatRequest(CamelModel):
     messages: list[ChatMessage] = Field(min_length=1, max_length=MAX_MESSAGES)
 
 
+class ChatChangeOut(CamelModel):
+    """Un cambio guardado por el chat: qué se hizo, con qué objeto y dónde quedó, en palabras."""
+
+    action: Literal["added", "removed", "moved"]
+    name: str
+    where: str
+
+
 class ChatReply(CamelModel):
     role: Literal["assistant"] = "assistant"
     content: str
+    # Aditivo (CONTRATO-FASE2.md, 2.5): vacío si el mensaje no cambió nada.
+    changes: list[ChatChangeOut] = Field(default_factory=list)
