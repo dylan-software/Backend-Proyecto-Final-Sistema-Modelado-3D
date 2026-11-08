@@ -8,10 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.main import app
 from app.models.space import MuebleSugerido
-from app.routers.spaces import NOTHING_TO_UNDO, get_photo_undo_store
+from app.routers.spaces import NOTHING_TO_UNDO
 from app.services import photo_estimator
-from app.services.photo_undo import PhotoUndoStore
 from app.services.room_objects import WALL_NEEDS_RECTANGLE
+from app.services.room_undo import RoomUndoStore, get_room_undo_store
 from app.tests.test_analyze_photo import stored, upload
 from app.tests.test_photo_estimator import ESTIMATE, FakeModel
 from app.tests.test_rooms_api import ROOMS, created_id
@@ -27,10 +27,10 @@ TABLE = {"name": "Mesa", "kind": "floor", "widthCm": 120, "depthCm": 80, "height
 @pytest.fixture
 def undo_store():
     """Almacén de deshacer la foto limpio, el mismo para analyze-photo, photo-undo y estas rutas."""
-    fresh = PhotoUndoStore()
-    app.dependency_overrides[get_photo_undo_store] = lambda: fresh
+    fresh = RoomUndoStore()
+    app.dependency_overrides[get_room_undo_store] = lambda: fresh
     yield fresh
-    app.dependency_overrides.pop(get_photo_undo_store, None)
+    app.dependency_overrides.pop(get_room_undo_store, None)
 
 
 @pytest.fixture

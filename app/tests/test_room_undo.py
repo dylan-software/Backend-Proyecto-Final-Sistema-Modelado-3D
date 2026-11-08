@@ -1,4 +1,4 @@
-"""Deshacer la foto a 3D (CONTRATO-DESHACER-FOTO.md): el almacén de copias y POST /rooms/{id}/photo-undo."""
+"""Deshacer de una sala (CONTRATO-FASE2.md): el almacén único de copias y deshacer la foto a 3D."""
 
 import dataclasses
 import json
@@ -9,16 +9,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.main import app
 from app.models.space import Habitacion, MuebleSugerido
-from app.routers.spaces import NOTHING_TO_UNDO, get_photo_undo_store
+from app.routers.spaces import NOTHING_TO_UNDO
 from app.services import photo_estimator
-from app.services.photo_undo import (
+from app.services.room_undo import (
     MAX_UNDO_DEPTH,
+    MAX_UNDO_PIECES,
     MAX_UNDO_ROOMS,
     FurnitureSnapshot,
-    PhotoUndoStore,
     RoomSnapshot,
-    photo_undo_store,
+    RoomUndoStore,
+    get_room_undo_store,
     restore_room,
+    room_undo_store,
     snapshot_room,
 )
 from app.tests.test_analyze_photo import bare_room, estimate_with, stored, stored_room, upload
@@ -29,21 +31,28 @@ from app.utils import rate_limit
 pytestmark = pytest.mark.anyio
 
 
-def snap(tag):
-    """Una copia distinguible por su alto."""
-    return RoomSnapshot(vertices=None, ancho=4, profundidad=3, alto=tag, furniture=())
+CHAIR = FurnitureSnapshot("Silla", 0.5, 0.9, 0.5, 1, 0, 1)
+
+
+def snap(tag, pieces=0, change="photo"):
+    """Una copia distinguible por su alto, con pieces objetos."""
+    return RoomSnapshot(
+        vertices=None, ancho=4, profundidad=3, alto=tag, furniture=(CHAIR,) * pieces, change=change
+    )
 
 
 # --- Almacén ----------------------------------------------------------------------------------------
 
 
 def test_defaults_follow_the_contract():
-    assert (MAX_UNDO_ROOMS, MAX_UNDO_DEPTH) == (200, 5)
-    assert (photo_undo_store.max_rooms, photo_undo_store.max_depth) == (200, 5)
+    assert (MAX_UNDO_ROOMS, MAX_UNDO_DEPTH, MAX_UNDO_PIECES) == (100, 50, 2000)
+    assert (room_undo_store.max_rooms, room_undo_store.max_depth, room_undo_store.max_pieces) == (
+        100, 50, 2000
+    )
 
 
 def test_pop_returns_the_latest_copy_first():
-    store = PhotoUndoStore()
+    store = RoomUndoStore()
     for tag in (1, 2, 3):
         store.push("user-a", 7, snap(tag))
 
@@ -54,7 +63,7 @@ def test_pop_returns_the_latest_copy_first():
 
 
 def test_an_empty_stack_leaves_the_cache():
-    store = PhotoUndoStore()
+    store = RoomUndoStore()
     store.push("user-a", 7, snap(1))
 
     store.pop("user-a", 7)
@@ -63,7 +72,7 @@ def test_an_empty_stack_leaves_the_cache():
 
 
 def test_a_full_stack_drops_the_oldest_copy():
-    store = PhotoUndoStore(depth=5)
+    store = RoomUndoStore(depth=5)
     for tag in range(1, 8):
         store.push("user-a", 7, snap(tag))
 
@@ -72,8 +81,49 @@ def test_a_full_stack_drops_the_oldest_copy():
     assert [store.pop("user-a", 7).alto for _ in range(5)] == [7, 6, 5, 4, 3]
 
 
+def test_the_default_stack_keeps_the_last_50_changes():
+    store = RoomUndoStore()
+    for tag in range(1, 53):
+        store.push("user-a", 7, snap(tag))
+
+    assert store.depth("user-a", 7) == 50
+    copies = [store.pop("user-a", 7).alto for _ in range(50)]
+    assert copies == list(range(52, 2, -1))
+
+
+def test_too_many_stored_pieces_drop_the_oldest_copies():
+    store = RoomUndoStore(depth=10, max_pieces=10)
+    for tag, pieces in ((1, 4), (2, 0), (3, 4)):  # pesos 4 + 1 + 4 = 9
+        store.push("user-a", 7, snap(tag, pieces))
+
+    store.push("user-a", 7, snap(4, 3))  # 9 + 3 = 12 > 10: sale la 1 (4); 8 <= 10
+
+    assert [store.pop("user-a", 7).alto for _ in range(3)] == [4, 3, 2]
+    assert store.pop("user-a", 7) is None
+
+
+def test_a_copy_alone_over_the_piece_limit_is_still_kept():
+    store = RoomUndoStore(max_pieces=3)
+    store.push("user-a", 7, snap(1, 2))
+
+    store.push("user-a", 7, snap(2, 5))
+
+    assert store.depth("user-a", 7) == 1
+    assert store.pop("user-a", 7).alto == 2
+
+
+def test_the_stack_mixes_every_kind_of_change_in_lifo_order():
+    store = RoomUndoStore()
+    for change in ("photo", "chat", "add", "update", "delete", "layout", "vertices"):
+        store.push("user-a", 7, snap(1, change=change))
+
+    changes = [store.pop("user-a", 7).change for _ in range(7)]
+
+    assert changes == ["vertices", "layout", "delete", "update", "add", "chat", "photo"]
+
+
 def test_keys_of_users_and_rooms_do_not_mix():
-    store = PhotoUndoStore()
+    store = RoomUndoStore()
     store.push("user-a", 1, snap("a1"))
     store.push("user-b", 1, snap("b1"))
     store.push("user-a", 2, snap("a2"))
@@ -86,7 +136,7 @@ def test_keys_of_users_and_rooms_do_not_mix():
 
 
 def test_the_least_used_room_is_evicted():
-    store = PhotoUndoStore(max_rooms=2)
+    store = RoomUndoStore(max_rooms=2)
     store.push("user-a", 1, snap(1))
     store.push("user-a", 2, snap(2))
     store.push("user-a", 1, snap(11))  # la sala 1 pasa a ser la más reciente
@@ -99,7 +149,7 @@ def test_the_least_used_room_is_evicted():
 
 
 def test_depth_does_not_refresh_a_room():
-    store = PhotoUndoStore(max_rooms=2)
+    store = RoomUndoStore(max_rooms=2)
     store.push("user-a", 1, snap(1))
     store.push("user-a", 2, snap(2))
 
@@ -110,12 +160,22 @@ def test_depth_does_not_refresh_a_room():
 
 
 def test_clear_forgets_everything():
-    store = PhotoUndoStore()
+    store = RoomUndoStore()
     store.push("user-a", 1, snap(1))
 
     store.clear()
 
     assert (len(store), store.pop("user-a", 1)) == (0, None)
+
+
+def test_forget_drops_only_that_room():
+    store = RoomUndoStore()
+    store.push("user-a", 1, snap(1))
+    store.push("user-a", 2, snap(2))
+
+    store.forget("user-a", 1)
+
+    assert (store.depth("user-a", 1), store.depth("user-a", 2)) == (0, 1)
 
 
 # --- Copia y restauración de una sala --------------------------------------------------------------
@@ -142,8 +202,9 @@ SQUARE = [{"x": 0, "y": 0}, {"x": 5, "y": 0}, {"x": 5, "y": 4}, {"x": 0, "y": 4}
 def test_the_snapshot_holds_values_not_rows():
     row = room_row([dict(v) for v in SQUARE], [MESA])
 
-    copy = snapshot_room(row)
+    copy = snapshot_room(row, "chat")
 
+    assert copy.change == "chat"
     assert copy.vertices == ((0, 0), (5, 0), (5, 4), (0, 4))
     assert (copy.ancho, copy.profundidad, copy.alto) == (5, 4, 2.6)
     assert copy.furniture == (FurnitureSnapshot(**MESA),)
@@ -156,9 +217,14 @@ def test_the_snapshot_holds_values_not_rows():
     assert copy.furniture[0].nombre == "Mesa"
 
 
+def test_an_unknown_change_is_refused():
+    with pytest.raises(ValueError):
+        snapshot_room(room_row(None), "rotate")
+
+
 def test_restore_puts_back_shape_and_furniture_with_new_lists():
     row = room_row([dict(v) for v in SQUARE], [MESA])
-    copy = snapshot_room(row)
+    copy = snapshot_room(row, "photo")
     old_vertices = row.vertices
     row.vertices = [{"x": 0, "y": 0}, {"x": 4, "y": 0}, {"x": 4, "y": 3}, {"x": 0, "y": 3}]
     row.ancho, row.profundidad, row.alto = 4, 3, 2.5
@@ -175,7 +241,7 @@ def test_restore_puts_back_shape_and_furniture_with_new_lists():
 
 def test_a_room_without_shape_is_restored_without_vertices():
     row = room_row(None)
-    copy = snapshot_room(row)
+    copy = snapshot_room(row, "photo")
     row.vertices = list(SQUARE)
 
     restore_room(row, copy)
@@ -189,10 +255,19 @@ def test_a_room_without_shape_is_restored_without_vertices():
 @pytest.fixture
 def store():
     """Almacén limpio para cada prueba, inyectado en analyze-photo y en photo-undo."""
-    fresh = PhotoUndoStore()
-    app.dependency_overrides[get_photo_undo_store] = lambda: fresh
+    fresh = RoomUndoStore()
+    app.dependency_overrides[get_room_undo_store] = lambda: fresh
     yield fresh
-    app.dependency_overrides.pop(get_photo_undo_store, None)
+    app.dependency_overrides.pop(get_room_undo_store, None)
+
+
+@pytest.fixture
+def small_store():
+    """Almacén con pilas de 5 copias, para probar el tope sin hacer 51 fotos."""
+    fresh = RoomUndoStore(depth=5)
+    app.dependency_overrides[get_room_undo_store] = lambda: fresh
+    yield fresh
+    app.dependency_overrides.pop(get_room_undo_store, None)
 
 
 @pytest.fixture
@@ -284,7 +359,7 @@ async def test_two_photos_are_undone_last_first(user_a, db_sessions, model, stor
     assert third.json()["detail"] == NOTHING_TO_UNDO
 
 
-async def test_only_the_last_5_photos_can_be_undone(user_a, db_sessions, model, store, no_ai_limit):
+async def test_a_full_stack_drops_the_oldest_photo(user_a, db_sessions, model, small_store, no_ai_limit):
     room_id = await created_id(user_a, vertices=L_ROOM)
     for width in range(2, 8):  # 6 fotos: anchos 2, 3, 4, 5, 6 y 7
         model.reply = room_with(width)

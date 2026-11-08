@@ -37,7 +37,7 @@ from app.schemas.space import (
 )
 from app.services.omniroute import OmniRouteError, suggest_layout
 from app.services.photo_estimator import PhotoEstimateError, PhotoEstimateTimeout, estimate_room_from_photo
-from app.services.photo_undo import get_photo_undo_store, restore_room, snapshot_room
+from app.services.room_undo import commit_with_undo, get_room_undo_store, restore_room, snapshot_room
 from app.services.semantic_filter import cached_furniture_coherence
 from app.utils.helpers import ImageDecodeError, decode_image, load_image_matrix, summarize_image
 from app.utils.rate_limit import enforce_ai_quota
@@ -346,7 +346,7 @@ async def analyze_room_photo(
     instrucciones: str | None = Form(None, max_length=MAX_INSTRUCTIONS_LENGTH),
     session: AsyncSession = Depends(get_session),
     estimator=Depends(get_photo_estimator),
-    undo_store=Depends(get_photo_undo_store),
+    undo_store=Depends(get_room_undo_store),
     current_user: str = Depends(get_current_user),
 ):
     """Estima la sala y hasta 10 objetos a partir de una foto y los guarda (multipart: file,
@@ -355,7 +355,7 @@ async def analyze_room_photo(
     La foto va a un modelo con visión y se descarta: no se guarda ni se registra. La forma de la sala
     pasa a ser el rectángulo estimado y los objetos reemplazan los muebles anteriores; si la sala ya
     tenía forma o muebles, hace falta confirm_replace=true. Si el guardado sale bien, la copia de cómo
-    estaba la sala se apila para POST /rooms/{id}/photo-undo (CONTRATO-DESHACER-FOTO.md).
+    estaba la sala se apila en su pila de Deshacer (app.services.room_undo).
 
     Returns:
         200 con la sala, estimated=true, la descripción, los objetos guardados (esquina mínima y
@@ -390,15 +390,10 @@ async def analyze_room_photo(
             status.HTTP_502_BAD_GATEWAY, "El servicio de IA no devolvió una estimación válida."
         ) from None
 
-    previous = snapshot_room(row)
+    previous = snapshot_room(row, "photo")
     _apply_photo_plan(row, plan)
-    try:
-        await session.commit()
-    except DATABASE_ERRORS as exc:
-        await session.rollback()
-        raise database_error(exc) from exc
-    # Solo tras un commit correcto: una foto que falla no deja nada que deshacer.
-    undo_store.push(current_user, room_id, previous)
+    # Solo apila tras un commit correcto: una foto que falla no deja nada que deshacer.
+    await commit_with_undo(session, row, undo_store, previous)
 
     return AnalyzePhotoResponse(
         room=room_detail(row),
@@ -413,7 +408,7 @@ async def analyze_room_photo(
 async def undo_room_photo(
     room_id: int = Path(gt=0),
     session: AsyncSession = Depends(get_session),
-    undo_store=Depends(get_photo_undo_store),
+    undo_store=Depends(get_room_undo_store),
     current_user: str = Depends(get_current_user),
 ):
     """Devuelve la sala a la forma y los muebles que tenía antes de su última foto (sin cuerpo).
