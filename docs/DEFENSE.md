@@ -235,7 +235,9 @@ chat y de los movimientos a mano:
   candidata solo con los objetos de las celdas que toca, en vez de con todos.
 - **Franja de la pared (`wall_strip`).** Un objeto de pared solo se desliza a lo largo de su pared, así que
   solo puede chocar con los objetos que cruzan su franja. Esos objetos (los tramos ocupados de la pared) se
-  copian a un `FixedArray` del tamaño justo y la colocación en la pared solo mira esos.
+  copian a un `FixedArray` del tamaño justo y la colocación en la pared solo mira esos. También la usa
+  `slide_along_wall` (FASE 4): un armario o una cama arrimados a la pared que chocan se deslizan a lo largo
+  de ella, y solo se prueban la posición pedida y los dos lados de cada objeto de la franja.
 
 Los dos son **prefiltros exactos**: solo descartan objetos que no pueden chocar, y la comprobación final
 (`overlaps`) no cambia. Por eso las posiciones, los motivos de descarte y el presupuesto de trabajo son los
