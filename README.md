@@ -36,6 +36,7 @@ app/
 ├── geometry/               octree, colisiones, RANSAC, sala poligonal (room.py), layout y endpoints /geometry
 ├── services/omniroute.py   cliente de OmniRoute
 ├── services/scene_assistant.py  contexto y prompt del chat sobre una sala
+├── services/room_objects.py     añadir, mover y borrar objetos de una sala (una sola lógica)
 ├── utils/                  tipos compartidos, ayudas de imagen, logs (logging_config) y middlewares
 ├── routers/spaces.py       POST /analyze, catálogo, listado, POST /rooms/{id}/analyze-photo y /photo-undo
 ├── routers/rooms.py        salas poligonales editables, sus muebles y el layout
@@ -102,6 +103,9 @@ responden 404, igual que los inexistentes. `/`, `/api/v1/health` y `/api/v1/auth
 | POST | `/api/v1/spaces/rooms/{id}/vertices` | Inserta un vértice: `{afterIndex, x, y}`. |
 | DELETE | `/api/v1/spaces/rooms/{id}/vertices/{index}` | Elimina un vértice; una sala conserva al menos 3. |
 | GET | `/api/v1/spaces/rooms/{id}/items` | Muebles colocados: `{items: [{id, name, x, y, rotation, widthM, depthM, heightM, elevationM}]}`. |
+| POST | `/api/v1/spaces/rooms/{id}/items` | Añade un objeto: `{name, kind, wall?, widthCm, depthCm, heightCm, elevationCm?}`; el servidor lo coloca → 201 `{item, wall, adjusted}`. |
+| PATCH | `/api/v1/spaces/rooms/{id}/items/{itemId}` | Renombra, cambia medidas o mueve (`position: {x, y, elevationM?, wall?}`); el servidor revalida → `{item, wall, adjusted}`. |
+| DELETE | `/api/v1/spaces/rooms/{id}/items/{itemId}` | Borra un objeto → 204 sin cuerpo. |
 | POST | `/api/v1/spaces/rooms/{id}/layout` | Distribuye el catálogo dentro del polígono real (sin IA) y guarda el resultado. |
 | POST | `/api/v1/spaces/rooms/{id}/analyze-photo` | Multipart (`file`, `confirm_replace`, `instrucciones`): la IA con visión estima la sala y hasta 10 objetos, que reemplazan la forma y los muebles de la sala. |
 | POST | `/api/v1/spaces/rooms/{id}/photo-undo` | Sin cuerpo: devuelve la sala a como estaba antes de su última foto → `{room, items, remaining}`. 409 si no hay nada que deshacer. |
@@ -220,6 +224,32 @@ lugar, `app/geometry/units.py`.
     guardan el mismo estado previo.
   - **El historial vive en memoria**, como los límites de peticiones: se pierde si Render reinicia el
     servidor (entonces responde 409 explicándolo) y necesita un único worker de uvicorn.
+  - **Deshacer la foto nunca borra trabajo posterior:** añadir, mover o borrar un objeto con las rutas
+    de abajo vacía la pila de la sala (solo si el guardado sale bien); desde entonces responde 409.
+- **Objetos de la sala.** `POST`, `PATCH` y `DELETE /rooms/{id}/items[/{itemId}]`. Contrato completo en
+  `CONTRATO-FASE0.md`, en la carpeta que contiene los tres repos. Una sola lógica en
+  `app/services/room_objects.py`, pensada también para el formulario manual y las acciones del chat;
+  la geometría está en `app/geometry/arrangement.py`. Sin IA ni cuota, y sin migración: no se guarda si
+  un objeto es de suelo o de pared (para los obstáculos se deduce de su base).
+  - **Pared** (`kind="wall"`, `wall` = `back` z mínima, `front` z máxima, `left` x mínima, `right` x
+    máxima): solo en salas rectangulares (sin vértices o con un polígono que es su caja delimitadora;
+    si no, 422). Se pega a la pared pedida, centrado; la base por defecto deja el centro a 1,50 m
+    (`elevationCm` la cambia) y la puerta va al suelo. Si choca, sube sobre el mueble de suelo y se
+    desliza a lo largo de la pared. `widthCm` es el ancho a lo largo de la pared y `depthCm` el grosor.
+  - **Suelo:** primer hueco libre, por filas desde la esquina mínima con el paso del layout, dentro del
+    polígono real y sin solaparse en 3D con nada (un cuadro alto no estorba a un taburete). Búsqueda
+    acotada con el tope por mueble del layout.
+  - **PATCH** (al menos un campo): `widthCm`/`depthCm` son la extensión en x/z, como `widthM`/`depthM`.
+    Con `position` (esquina mínima en metros) se pide esa posición; con `position.wall` se pega a esa
+    pared y la otra coordenada se acota al tramo. Sin `position`, el objeto conserva centro y base, y si
+    tocaba una pared (a 1 cm o menos) sigue pegado. La posición se acota a la sala y entre suelo y
+    techo; si choca, pasa al hueco libre más cercano (`adjusted: true`). Solo con `name` no se toca la
+    geometría.
+  - Validación estricta: nombres de texto plano de 1 a 60 caracteres, medidas de 5 a 400 cm, sin NaN,
+    infinitos ni conversiones de tipo ("2" no es 2), campos desconocidos rechazados; 422 sin eco.
+  - Errores: 401; 404 sala ajena o inexistente, u objeto que no es de esa sala; **409** sin sitio, más
+    alto que la sala o sala con 200 objetos; 422; 503/500 si falla la base de datos (rollback, la pila de
+    la foto no se toca). Dos peticiones simultáneas pueden dejar 201 objetos o un solape (aceptado).
 
 ## Límites de peticiones
 
