@@ -1,9 +1,9 @@
-"""In-memory request limits (sliding windows), answered with 429 and Retry-After.
+"""Límites de peticiones en memoria (ventanas deslizantes), que responden 429 con Retry-After.
 
-The counters live in this process: they reset when the server restarts and are not shared between
-workers or instances. The Docker image runs a single uvicorn worker on one Render instance, so that
-is enough to stop a client from burning the AI quota or guessing passwords; several workers would
-each allow the full limit.
+Los contadores viven en este proceso: se reinician cuando el servidor se reinicia y no se comparten
+entre workers ni instancias. La imagen de Docker ejecuta un único worker de uvicorn en una instancia
+de Render, así que basta para impedir que un cliente agote la cuota de IA o adivine contraseñas; con
+varios workers, cada uno permitiría el límite completo.
 """
 
 import math
@@ -20,14 +20,15 @@ MINUTE = 60
 HOUR = 60 * MINUTE
 DAY = 24 * HOUR
 
-# Distinct keys kept before the idle ones are dropped, so random emails or IPs cannot grow memory.
+# Claves distintas que se guardan antes de olvidar las inactivas, para que emails o IPs aleatorios
+# no hagan crecer la memoria.
 MAX_KEYS = 50_000
 
 
 class RateLimiter:
-    """Allows at most `limit` events per `window` seconds for each key, for every (limit, window) pair.
+    """Permite como mucho `limit` eventos cada `window` segundos por clave, para cada par (limit, window).
 
-    clock: returns seconds; time.monotonic by default, replaceable in tests.
+    clock: devuelve segundos; time.monotonic por defecto, sustituible en las pruebas.
     """
 
     def __init__(self, limits, clock=time.monotonic):
@@ -91,7 +92,7 @@ class RateLimiter:
     def _forget_idle(self, now):
         for key in list(self._events):
             self._recent(key, now)
-        # Still full: drop the keys seen first (dicts keep insertion order).
+        # Sigue lleno: se olvidan las claves vistas primero (los dict conservan el orden de inserción).
         while len(self._events) >= MAX_KEYS:
             del self._events[next(iter(self._events))]
 
@@ -104,21 +105,21 @@ def too_many_requests(wait, detail):
 
 @lru_cache
 def ai_limiter():
-    """Calls to the AI model (chat, catalog, analyze, analyze-photo), per account."""
+    """Llamadas al modelo de IA (chat, catalog, analyze, analyze-photo), por cuenta."""
     settings = get_settings()
     return RateLimiter([(settings.ai_requests_per_minute, MINUTE), (settings.ai_requests_per_day, DAY)])
 
 
 @lru_cache
 def login_failure_limiter():
-    """Failed logins per email. Not per IP: an IP comes from headers a client can forge."""
+    """Logins fallidos por email. No por IP: la IP sale de cabeceras que un cliente puede falsificar."""
     settings = get_settings()
     return RateLimiter([(settings.login_failures_per_email, settings.login_failure_window_minutes * MINUTE)])
 
 
 @lru_cache
 def registration_limiter():
-    """Registrations, under one shared key for the global limit and one key per client IP."""
+    """Registros, con una clave compartida para el límite global y una clave por IP del cliente."""
     settings = get_settings()
     return {
         "global": RateLimiter([(settings.registrations_per_hour, HOUR)]),
@@ -127,7 +128,7 @@ def registration_limiter():
 
 
 def reset_all():
-    """Forget every counter and re-read the settings (tests)."""
+    """Olvida todos los contadores y vuelve a leer la configuración (pruebas)."""
     for factory in (ai_limiter, login_failure_limiter, registration_limiter):
         factory.cache_clear()
 
@@ -149,9 +150,10 @@ def enforce_ai_quota(user_id, cost=1):
 
 
 def enforce_registration_limit(request):
-    """Count one registration, or raise 429 if the global or this IP's hourly limit is used up.
+    """Cuenta un registro, o lanza 429 si se agotó el límite por hora global o el de esta IP.
 
-    The global limit holds whatever the headers say; the per-IP one is best effort (see client_ip).
+    El límite global se cumple digan lo que digan las cabeceras; el de por IP es de mejor esfuerzo
+    (ver client_ip).
     """
     limiters = registration_limiter()
     keys = (("global", "all"), ("ip", client_ip(request)))
@@ -163,15 +165,15 @@ def enforce_registration_limit(request):
 
 
 def client_ip(request):
-    """Best-effort client IP for the per-IP registration limit.
+    """IP del cliente, de mejor esfuerzo, para el límite de registros por IP.
 
-    X-Forwarded-For is a list that anyone can start: a client may send "X-Forwarded-For: 1.2.3.4" and
-    every proxy appends what it saw after it. Only the entries added by our own proxies can be
-    trusted, and those are the last TRUSTED_PROXY_HOPS ones. With 0 (the default) the header is
-    ignored and the TCP peer is used. On Render the TCP peer is Render's proxy, not the user, so
-    TRUSTED_PROXY_HOPS=1 is set there, ASSUMING Render's proxy appends the real client IP as the last
-    entry. If that assumption is wrong, the per-IP limit is only weaker; the global registration
-    limit does not depend on any header.
+    X-Forwarded-For es una lista que cualquiera puede empezar: un cliente puede enviar
+    "X-Forwarded-For: 1.2.3.4" y cada proxy añade detrás lo que vio. Solo son de fiar las entradas
+    que añaden nuestros propios proxies, que son las últimas TRUSTED_PROXY_HOPS. Con 0 (el valor por
+    defecto) se ignora la cabecera y se usa el par TCP. En Render el par TCP es el proxy de Render, no
+    el usuario, así que allí se pone TRUSTED_PROXY_HOPS=1, SUPONIENDO que el proxy de Render añade la
+    IP real del cliente como última entrada. Si esa suposición fuera falsa, el límite por IP solo se
+    debilita; el límite global de registros no depende de ninguna cabecera.
     """
     hops = get_settings().trusted_proxy_hops
     if hops > 0:
