@@ -283,14 +283,16 @@ hermanos (`prev_sibling`, `next_sibling`).
   ese recorrido: O(k).
 
 **Dónde se usa.** `GET /groups` (`app/routers/groups.py` y `app/services/project_tree.py`). La raíz es la
-cuenta, sus hijos son los grupos (del más antiguo al más nuevo) y los hijos de cada grupo son sus proyectos.
+cuenta, sus hijos son los grupos (del más antiguo al más nuevo) y, detrás de ellos, los proyectos sin
+grupo; los hijos de cada grupo son sus proyectos. Así el árbol contiene todos los proyectos de la cuenta.
 Un solo recorrido en profundidad lista los grupos y cuenta los proyectos de cada uno. Sustituye al
 `GROUP BY` de SQL y la respuesta es la misma: mismo orden, los grupos vacíos con 0 y los proyectos sin
-grupo sin contar.
+grupo sin contar (en el nivel 1 se reconocen por su valor `ProjectEntry` y no abren ni suman a ningún
+grupo).
 
 **Pruebas.** `test_nary_tree.py`: 20 casos, con 5 semillas × 3000 operaciones aleatorias contra un modelo de
 referencia con `dict` y `list`, más los casos límite (capacidad, nodos ajenos, árbol de 20 000 niveles y de
-5000 hijos). `test_project_tree.py`: 5 casos de la integración.
+5000 hijos). `test_project_tree.py`: 6 casos de la integración.
 
 ### 2.9 Cómo se demuestra
 
