@@ -281,3 +281,29 @@ def test_the_shift_can_be_limited_to_one_axis():
 def test_too_big_for_the_room():
     assert settle_at(box("Torre", 1, 1, 2.6, 2, 1.5), SQUARE, []) == (None, REASON_TOO_TALL)
     assert settle_at(box("Tarima", 4.5, 1, 0.3, 2, 1.5), SQUARE, []) == (None, REASON_OUTSIDE)
+
+
+# --- Arrimar un mueble de suelo a la pared sin apilarlo (CONTRATO-FASE2.md, 2.3) ------------------------
+
+
+def test_without_stacking_a_floor_object_slides_instead_of_rising():
+    bed = box("Cama", 1.0, 2.0, 0.5, 3.4, 1.0)  # x de 2,9 a 3,9, contra la pared del fondo
+    sofa = box("Sofá", 2.0, 0.9, 0.85, 0, 0)  # centrado en la pared: x de 1 a 3, choca con la cama
+
+    stacked, _ = place_on_wall(sofa, SQUARE, "back", [bed])
+    slid, reason = place_on_wall(sofa, SQUARE, "back", [bed], stack=False)
+
+    assert stacked.elevation_m == pytest.approx(0.5)  # con stack (lo de siempre) sube sobre la cama
+    assert reason is None
+    assert slid.elevation_m == 0
+    assert (slid.center_x, slid.center_z) == pytest.approx((1.89, 0.45))
+    assert not overlaps(slid, bed)
+
+
+def test_without_stacking_a_blocked_wall_has_no_room_left():
+    wide = box("Tarima", 4, 0.5, 0.3, 2, 0.25)
+
+    placed, reason = place_on_wall(box("Sofá", 2.0, 0.9, 0.85, 0, 0), SQUARE, "back", [wide], stack=False)
+
+    assert placed is None
+    assert reason == overlap_reason("Tarima")
