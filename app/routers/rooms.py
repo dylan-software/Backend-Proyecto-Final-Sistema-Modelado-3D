@@ -31,12 +31,19 @@ from app.schemas.room import (
     RoomDetail,
     RoomItem,
     RoomItemsOut,
+    RoomUndoResponse,
     RoomUpdate,
     Vertex,
     VertexInsert,
 )
 from app.services.room_objects import RoomObjectError, delete_object, place_object, update_object
-from app.services.room_undo import get_room_undo_store
+from app.services.room_undo import (
+    NOTHING_TO_UNDO,
+    commit_with_undo,
+    get_room_undo_store,
+    restore_room,
+    snapshot_room,
+)
 
 router = APIRouter(prefix="/api/v1/spaces/rooms", tags=["rooms"])
 
@@ -109,19 +116,23 @@ def _invalid_room(exc):
     return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Habitación inválida: {exc}")
 
 
-async def _edit_room(session, room_id, user_id, edit):
-    """Apply edit(Room) to a stored room and save it, or answer 422 leaving the room unchanged."""
-    row = await load_owned_room(session, room_id, user_id)
+async def _edit_room(session, room_id, user_id, edit, undo_store):
+    """Apply edit(Room) to a stored room and save it, or answer 422 leaving the room unchanged.
+
+    Tras un guardado correcto, la copia de antes ("vertices") va a la pila de Deshacer de la sala.
+    """
+    row = await load_owned_room(session, room_id, user_id, selectinload(Habitacion.muebles))
     geometry = room_geometry(row)
     try:
         edit(geometry)
     except RoomError as exc:
         raise _invalid_room(exc) from exc
+    before = snapshot_room(row, "vertices")
     # to_record builds a NEW vertices list: SQLAlchemy only notices a JSON change when the attribute
     # is reassigned, never when the stored list is mutated in place.
     for column, value in geometry.to_record().items():
         setattr(row, column, value)
-    await _commit(session)
+    await commit_with_undo(session, row, undo_store, before)
     return room_detail(row)
 
 
@@ -209,6 +220,7 @@ async def move_vertex(
     room_id: int = RoomId,
     index: int = VertexIndex,
     session: AsyncSession = Depends(get_session),
+    undo_store=Depends(get_room_undo_store),
     current_user: str = Depends(get_current_user),
 ):
     """Move one vertex (drag-to-edit). The others stay where they are.
@@ -218,7 +230,7 @@ async def move_vertex(
             range or the polygon would become invalid (the room is not changed), 503 database failure.
     """
     return await _edit_room(
-        session, room_id, current_user, lambda room: room.move_vertex(index, (body.x, body.y))
+        session, room_id, current_user, lambda room: room.move_vertex(index, (body.x, body.y)), undo_store
     )
 
 
@@ -227,6 +239,7 @@ async def insert_vertex(
     body: VertexInsert,
     room_id: int = RoomId,
     session: AsyncSession = Depends(get_session),
+    undo_store=Depends(get_room_undo_store),
     current_user: str = Depends(get_current_user),
 ):
     """Insert a vertex after afterIndex, splitting that edge.
@@ -236,7 +249,11 @@ async def insert_vertex(
             range or the polygon would become invalid, 503 database failure.
     """
     return await _edit_room(
-        session, room_id, current_user, lambda room: room.insert_vertex(body.after_index, (body.x, body.y))
+        session,
+        room_id,
+        current_user,
+        lambda room: room.insert_vertex(body.after_index, (body.x, body.y)),
+        undo_store,
     )
 
 
@@ -245,6 +262,7 @@ async def remove_vertex(
     room_id: int = RoomId,
     index: int = VertexIndex,
     session: AsyncSession = Depends(get_session),
+    undo_store=Depends(get_room_undo_store),
     current_user: str = Depends(get_current_user),
 ):
     """Remove a vertex. A room always keeps at least 3.
@@ -253,7 +271,9 @@ async def remove_vertex(
         HTTPException: 401 no valid session, 404 no such room for this account, 422 index out of
             range, only 3 vertices left or the polygon would become invalid, 503 database failure.
     """
-    return await _edit_room(session, room_id, current_user, lambda room: room.remove_vertex(index))
+    return await _edit_room(
+        session, room_id, current_user, lambda room: room.remove_vertex(index), undo_store
+    )
 
 
 # --- Placed furniture and generated layout ----------------------------------------------------------
@@ -299,7 +319,7 @@ async def add_room_item(
     """Añade un objeto a la sala; el servidor calcula su posición (CONTRATO-FASE0.md).
 
     De pared: pegado a la pared pedida de una sala rectangular, centrado. De suelo: primer hueco libre.
-    Sin IA ni cuota. Vacía la pila de deshacer la foto de la sala.
+    Sin IA ni cuota. Se puede deshacer con POST /rooms/{id}/undo.
 
     Returns:
         201 con {item, wall, adjusted}.
@@ -338,8 +358,8 @@ async def update_room_item(
 ):
     """Renombra, cambia medidas o mueve un objeto; el servidor revalida y devuelve la posición final.
 
-    Si la posición pedida choca, pasa al hueco libre más cercano (adjusted=true). Vacía la pila de
-    deshacer la foto de la sala.
+    Si la posición pedida choca, pasa al hueco libre más cercano (adjusted=true). Se puede deshacer con
+    POST /rooms/{id}/undo.
 
     Raises:
         HTTPException: 401 sin sesión válida, 404 sala ajena o inexistente u objeto que no es de esa sala,
@@ -370,7 +390,7 @@ async def delete_room_item(
     undo_store=Depends(get_room_undo_store),
     current_user: str = Depends(get_current_user),
 ):
-    """Borra un objeto de la sala (204 sin cuerpo). Vacía la pila de deshacer la foto de la sala.
+    """Borra un objeto de la sala (204 sin cuerpo). Se puede deshacer con POST /rooms/{id}/undo.
 
     Raises:
         HTTPException: 401 sin sesión válida, 404 sala u objeto ajenos o inexistentes, 503/500 fallo de
@@ -429,6 +449,7 @@ async def generate_room_layout(
     body: LayoutRequest,
     room_id: int = RoomId,
     session: AsyncSession = Depends(get_session),
+    undo_store=Depends(get_room_undo_store),
     current_user: str = Depends(get_current_user),
 ):
     """Place catalog furniture inside the room's real polygon and store the result.
@@ -473,8 +494,54 @@ async def generate_room_layout(
                     posicion_z=center_z,
                 )
             )
+        # Copia para Deshacer, antes de reemplazar los muebles.
+        before = snapshot_room(row, "layout")
         # delete-orphan cascade: the previous furniture of the room is deleted in the same commit.
         row.muebles = placed
-        await _commit(session)
+        await commit_with_undo(session, row, undo_store, before)
 
     return LayoutResponse.model_validate(asdict(result))
+
+
+# --- Deshacer (CONTRATO-FASE2.md, sección 1) ---------------------------------------------------------
+
+
+@router.post("/{room_id}/undo", response_model=RoomUndoResponse)
+@router.post("/{room_id}/photo-undo", response_model=RoomUndoResponse, deprecated=True)
+async def undo_last_change(
+    room_id: int = RoomId,
+    session: AsyncSession = Depends(get_session),
+    undo_store=Depends(get_room_undo_store),
+    current_user: str = Depends(get_current_user),
+):
+    """Deshace el último cambio de la sala, sea cual sea: foto, chat, objetos, layout o vértices.
+
+    La copia sale de la pila de la sala (LinkedStack, hasta 50) en memoria: se pierde si el servidor se
+    reinicia. No llama a la IA ni gasta cuota. photo-undo es un alias obsoleto (misma pila).
+
+    Returns:
+        200 con {room, items, remaining, undone}; remaining = cambios que aún se pueden deshacer.
+
+    Raises:
+        HTTPException: 401 sin sesión válida, 404 sala inexistente o ajena (antes de mirar la pila),
+            409 no hay nada que deshacer, 503/500 fallo de base de datos (la copia vuelve a la pila).
+    """
+    row = await load_owned_room(session, room_id, current_user, selectinload(Habitacion.muebles))
+    # Sin await entre leer la pila y quitar la copia.
+    snapshot = undo_store.pop(current_user, room_id)
+    if snapshot is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, NOTHING_TO_UNDO)
+    restore_room(row, snapshot)
+    try:
+        await session.commit()
+    except DATABASE_ERRORS as exc:
+        await session.rollback()
+        undo_store.push(current_user, room_id, snapshot)  # no se pierde la copia
+        raise database_error(exc) from exc
+
+    return RoomUndoResponse(
+        room=room_detail(row),
+        items=[room_item(piece) for piece in row.muebles],
+        remaining=undo_store.depth(current_user, room_id),
+        undone=snapshot.change,
+    )

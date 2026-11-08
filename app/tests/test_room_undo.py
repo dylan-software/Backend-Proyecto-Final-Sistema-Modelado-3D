@@ -9,12 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.main import app
 from app.models.space import Habitacion, MuebleSugerido
-from app.routers.spaces import NOTHING_TO_UNDO
 from app.services import photo_estimator
 from app.services.room_undo import (
     MAX_UNDO_DEPTH,
     MAX_UNDO_PIECES,
     MAX_UNDO_ROOMS,
+    NOTHING_TO_UNDO,
     FurnitureSnapshot,
     RoomSnapshot,
     RoomUndoStore,
@@ -24,6 +24,7 @@ from app.services.room_undo import (
     snapshot_room,
 )
 from app.tests.test_analyze_photo import bare_room, estimate_with, stored, stored_room, upload
+from app.tests.test_layout_api import add_catalog, layout
 from app.tests.test_photo_estimator import ESTIMATE, FakeModel
 from app.tests.test_rooms_api import ROOMS, created_id
 from app.utils import rate_limit
@@ -249,7 +250,7 @@ def test_a_room_without_shape_is_restored_without_vertices():
     assert (copy.vertices, row.vertices, row.muebles) == (None, None, [])
 
 
-# --- POST /rooms/{id}/photo-undo ----------------------------------------------------------------------
+# --- POST /rooms/{id}/undo ----------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -285,7 +286,7 @@ def no_ai_limit(monkeypatch):
 
 
 async def undo(client, room_id):
-    return await client.post(f"{ROOMS}/{room_id}/photo-undo")
+    return await client.post(f"{ROOMS}/{room_id}/undo")
 
 
 def room_with(width):
@@ -315,8 +316,8 @@ async def test_undo_restores_the_shape_height_and_furniture(user_a, db_sessions,
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert set(body) == {"room", "items", "remaining"}
-    assert body["remaining"] == 0
+    assert set(body) == {"room", "items", "remaining", "undone"}
+    assert (body["remaining"], body["undone"]) == (0, "photo")
     room = body["room"]
     assert room["id"] == room_id
     assert room["vertices"] == [{"x": x, "y": y} for x, y in L_ROOM]
@@ -462,3 +463,66 @@ async def test_a_failed_commit_puts_the_copy_back(user_a, db_sessions, model, st
     retried = await undo(user_a, room_id)
     assert retried.status_code == 200, retried.text
     assert retried.json()["room"]["vertices"] == [{"x": x, "y": y} for x, y in L_ROOM]
+
+
+# --- Una sola pila para todos los cambios de la sala -------------------------------------------------
+
+
+async def test_the_old_photo_undo_route_is_an_alias_of_undo(user_a, db_sessions, model, store):
+    room_id = await created_id(user_a, vertices=L_ROOM)
+    await upload(user_a, room_id)
+
+    response = await user_a.post(f"{ROOMS}/{room_id}/photo-undo")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["undone"] == "photo"
+    assert (await undo(user_a, room_id)).json()["detail"] == NOTHING_TO_UNDO
+
+
+async def test_undo_takes_back_the_last_change_first_whatever_it_was(user_a, db_sessions, model, store):
+    room_id = await created_id(user_a, vertices=L_ROOM)
+    photo = await upload(user_a, room_id)
+    table = {"name": "Mesa nueva", "kind": "floor", "widthCm": 50, "depthCm": 50, "heightCm": 70}
+    assert (await user_a.post(f"{ROOMS}/{room_id}/items", json=table)).status_code == 201
+
+    first, second = await undo(user_a, room_id), await undo(user_a, room_id)
+
+    assert (first.json()["undone"], first.json()["remaining"]) == ("add", 1)
+    # Deshacer el objeto deja la sala como la dejó la foto, no como antes de ella. Los objetos se
+    # recrean desde la copia, así que sus ids cambian.
+    without_id = [{**item, "id": None} for item in photo.json()["items"]]
+    assert [{**item, "id": None} for item in first.json()["items"]] == without_id
+    assert (second.json()["undone"], second.json()["remaining"]) == ("photo", 0)
+    assert second.json()["room"]["vertices"] == [{"x": x, "y": y} for x, y in L_ROOM]
+
+
+async def test_a_vertex_edit_can_be_undone(user_a, db_sessions, store):
+    room_id = await created_id(user_a, vertices=L_ROOM)
+    moved = await user_a.patch(f"{ROOMS}/{room_id}/vertices/1", json={"x": 5, "y": 0})
+    assert moved.status_code == 200, moved.text
+
+    response = await undo(user_a, room_id)
+
+    assert response.json()["undone"] == "vertices"
+    assert response.json()["room"]["vertices"] == [{"x": x, "y": y} for x, y in L_ROOM]
+    assert (await stored_room(db_sessions, room_id)).vertices[1] == {"x": 4, "y": 0}
+
+
+async def test_a_refused_vertex_edit_stacks_nothing(user_a, db_sessions, store):
+    room_id = await created_id(user_a, vertices=L_ROOM)
+
+    assert (await user_a.delete(f"{ROOMS}/{room_id}/vertices/99")).status_code == 422
+
+    assert store.depth("user-a", room_id) == 0
+
+
+async def test_a_stored_layout_can_be_undone(user_a, db_sessions, store):
+    room_id = await created_id(user_a)
+    await add_furniture(db_sessions, room_id, MESA)
+    await add_catalog(db_sessions, "user-a", ("Silla", 45, 90, 50))
+    assert (await layout(user_a, room_id)).json()["readyToRender"] is True
+
+    response = await undo(user_a, room_id)
+
+    assert response.json()["undone"] == "layout"
+    assert furniture_values(await stored(db_sessions, room_id)) == [MESA]

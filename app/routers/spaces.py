@@ -21,7 +21,7 @@ from app.routers.auth import ensure_same_user, get_current_user
 from app.routers.errors import DATABASE_ERRORS, database_error
 from app.routers.rooms import load_owned_room, room_detail, room_item
 from app.schemas.photo import MAX_INSTRUCTIONS_LENGTH
-from app.schemas.room import AnalyzePhotoResponse, DiscardedItem, PhotoUndoResponse
+from app.schemas.room import AnalyzePhotoResponse, DiscardedItem
 from app.schemas.space import (
     AnalyzeRequest,
     AnalyzeResponse,
@@ -37,7 +37,7 @@ from app.schemas.space import (
 )
 from app.services.omniroute import OmniRouteError, suggest_layout
 from app.services.photo_estimator import PhotoEstimateError, PhotoEstimateTimeout, estimate_room_from_photo
-from app.services.room_undo import commit_with_undo, get_room_undo_store, restore_room, snapshot_room
+from app.services.room_undo import commit_with_undo, get_room_undo_store, snapshot_room
 from app.services.semantic_filter import cached_furniture_coherence
 from app.utils.helpers import ImageDecodeError, decode_image, load_image_matrix, summarize_image
 from app.utils.rate_limit import enforce_ai_quota
@@ -66,10 +66,6 @@ MAX_PHOTO_REQUEST_BYTES = MAX_PHOTO_BYTES + 64 * 1024
 PHOTO_UPLOAD_PATH = r"^/api/v1/spaces/rooms/[^/]+/analyze-photo/?$"
 # Una foto con visión cuenta como 3 llamadas de la cuota de IA (v4, sección 2).
 PHOTO_AI_COST = 3
-NOTHING_TO_UNDO = (
-    "No hay ninguna foto que deshacer en esta sala. El historial de Deshacer solo se guarda mientras el "
-    "servidor está encendido y se pierde si se reinicia."
-)
 
 
 def get_layout_suggester():
@@ -401,46 +397,6 @@ async def analyze_room_photo(
         description=plan.description,
         items=[room_item(piece) for piece in row.muebles],
         discarded=[DiscardedItem(name=name, reason=reason) for name, reason in plan.discarded],
-    )
-
-
-@router.post("/rooms/{room_id}/photo-undo", response_model=PhotoUndoResponse)
-async def undo_room_photo(
-    room_id: int = Path(gt=0),
-    session: AsyncSession = Depends(get_session),
-    undo_store=Depends(get_room_undo_store),
-    current_user: str = Depends(get_current_user),
-):
-    """Devuelve la sala a la forma y los muebles que tenía antes de su última foto (sin cuerpo).
-
-    La copia sale de la pila de la sala (LinkedStack, máximo 5) en memoria: se pierde si el servidor se
-    reinicia. No llama a la IA ni gasta cuota. Contrato: CONTRATO-DESHACER-FOTO.md.
-
-    Returns:
-        200 con {room, items, remaining}; remaining = fotos que aún se pueden deshacer.
-
-    Raises:
-        HTTPException: 401 sin sesión válida, 404 sala inexistente o ajena (antes de mirar la pila),
-            409 no hay ninguna foto que deshacer, 503/500 fallo de base de datos (la copia vuelve a
-            la pila).
-    """
-    row = await load_owned_room(session, room_id, current_user, selectinload(Habitacion.muebles))
-    # Sin await entre leer la pila y quitar la copia.
-    snapshot = undo_store.pop(current_user, room_id)
-    if snapshot is None:
-        raise HTTPException(status.HTTP_409_CONFLICT, NOTHING_TO_UNDO)
-    restore_room(row, snapshot)
-    try:
-        await session.commit()
-    except DATABASE_ERRORS as exc:
-        await session.rollback()
-        undo_store.push(current_user, room_id, snapshot)  # no se pierde la copia
-        raise database_error(exc) from exc
-
-    return PhotoUndoResponse(
-        room=room_detail(row),
-        items=[room_item(piece) for piece in row.muebles],
-        remaining=undo_store.depth(current_user, room_id),
     )
 
 

@@ -8,10 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.main import app
 from app.models.space import MuebleSugerido
-from app.routers.spaces import NOTHING_TO_UNDO
 from app.services import photo_estimator
 from app.services.room_objects import WALL_NEEDS_RECTANGLE
-from app.services.room_undo import RoomUndoStore, get_room_undo_store
+from app.services.room_undo import NOTHING_TO_UNDO, RoomUndoStore, get_room_undo_store
 from app.tests.test_analyze_photo import stored, upload
 from app.tests.test_photo_estimator import ESTIMATE, FakeModel
 from app.tests.test_rooms_api import ROOMS, created_id
@@ -246,7 +245,7 @@ async def test_delete_is_204_then_404(user_a, db_sessions, undo_store):
     assert await stored(db_sessions, room_id) == []
 
 
-# --- Deshacer la foto nunca borra trabajo posterior ------------------------------------------------------
+# --- Deshacer la foto nunca borra trabajo posterior: antes se deshace ese trabajo ---------------------------
 
 
 async def photo_then(client, room_id):
@@ -255,30 +254,27 @@ async def photo_then(client, room_id):
     return response.json()["items"]
 
 
-async def test_adding_moving_or_deleting_after_a_photo_empties_its_undo(
+async def test_changes_after_a_photo_are_undone_before_the_photo(
     user_a, db_sessions, undo_store, vision_model
 ):
     room_id = await rectangle_room(user_a)
-
-    await photo_then(user_a, room_id)
+    items = await photo_then(user_a, room_id)
     added = await add(user_a, room_id, PICTURE)
     assert added.status_code == 201
-    after_add = await user_a.post(f"{ROOMS}/{room_id}/photo-undo")
-
-    items = await photo_then(user_a, room_id)
     renamed = await user_a.patch(items_url(room_id, items[0]["id"]), json={"name": "Movido"})
     assert renamed.status_code == 200
-    after_patch = await user_a.post(f"{ROOMS}/{room_id}/photo-undo")
+    assert (await user_a.delete(items_url(room_id, added.json()["item"]["id"]))).status_code == 204
 
-    items = await photo_then(user_a, room_id)
-    assert (await user_a.delete(items_url(room_id, items[0]["id"]))).status_code == 204
-    after_delete = await user_a.post(f"{ROOMS}/{room_id}/photo-undo")
+    undone = [(await user_a.post(f"{ROOMS}/{room_id}/undo")).json() for _ in range(4)]
 
-    for response in (after_add, after_patch, after_delete):
-        assert response.status_code == 409
-        assert response.json()["detail"] == NOTHING_TO_UNDO
-    # El trabajo posterior sigue guardado: la última foto menos el objeto borrado.
-    assert len(await stored(db_sessions, room_id)) == len(items) - 1
+    assert [body["undone"] for body in undone] == ["delete", "update", "add", "photo"]
+    # Tras deshacer los tres cambios de objetos, la sala es exactamente la de la foto.
+    assert [(i["name"], i["x"], i["y"]) for i in undone[2]["items"]] == [
+        (i["name"], i["x"], i["y"]) for i in items
+    ]
+    assert undone[3]["items"] == []
+    last = await user_a.post(f"{ROOMS}/{room_id}/undo")
+    assert (last.status_code, last.json()["detail"]) == (409, NOTHING_TO_UNDO)
 
 
 async def test_a_refused_change_keeps_the_photo_undo(user_a, db_sessions, undo_store, vision_model):
