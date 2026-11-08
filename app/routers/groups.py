@@ -70,8 +70,9 @@ async def list_groups(
 ):
     """Los grupos de la cuenta, del más antiguo al más nuevo, con su número de proyectos.
 
-    Grupos y proyectos se arman como un árbol n-ario (cuenta -> grupos -> proyectos) y se listan y cuentan
-    con un recorrido en profundidad (app/services/project_tree.py).
+    Grupos y proyectos se arman como un árbol n-ario (cuenta -> grupos -> proyectos; los proyectos sin grupo
+    cuelgan de la raíz) y se listan y cuentan con un recorrido en profundidad (app/services/project_tree.py).
+    Los proyectos sin grupo no cuentan en ningún grupo.
 
     Raises:
         HTTPException: 401 sin sesión válida, 503/500 fallo de base de datos.
@@ -79,7 +80,7 @@ async def list_groups(
     groups_query = select(ProjectGroup).where(ProjectGroup.user_id == current_user).order_by(ProjectGroup.id)
     projects_query = (
         select(Habitacion.id, Habitacion.group_id)
-        .where(Habitacion.user_id == current_user, Habitacion.group_id.is_not(None))
+        .where(Habitacion.user_id == current_user)
         .order_by(Habitacion.id)
     )
     try:
