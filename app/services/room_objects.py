@@ -21,6 +21,7 @@ from dataclasses import dataclass, replace
 from app.geometry.arrangement import (
     ATTACH_TOLERANCE_M,
     REASON_TOO_TALL,
+    WALL_SIDES,
     attached_wall,
     first_free_floor_spot,
     footprint,
@@ -245,6 +246,57 @@ def _resize(current, size, room, others):
     return result, reason, requested, None
 
 
+def _rests_on(item, other):
+    """Si item está apoyado encima de other: su base a la altura del techo de other y huellas solapadas."""
+    if abs(item.elevation_m - (other.elevation_m + other.height_m)) > FLOOR_EPSILON_M:
+        return False
+    ax0, ax1, az0, az1 = footprint(item)
+    bx0, bx1, bz0, bz1 = footprint(other)
+    return min(ax1, bx1) - max(ax0, bx0) > FLOOR_EPSILON_M and min(az1, bz1) - max(az0, bz0) > FLOOR_EPSILON_M
+
+
+def _is_wall_object(current, others, room):
+    """Si un objeto guardado es de pared (no hay columna kind; ver la cabecera del módulo).
+
+    Es de pared si está levantado, la sala es rectangular y, o bien está pegado a una pared, o bien no
+    está apoyado encima de otro objeto. Así, la mochila que la foto dejó encima de la cama sigue siendo
+    un objeto apoyado (se mueve libre), y un cuadro que quedó separado de la pared vuelve a ella.
+    """
+    if current.kind != "wall" or rectangle_of(room) is None:
+        return False
+    if attached_wall(current, room) is not None:
+        return True
+    return not any(_rests_on(current, other) for other in others)
+
+
+def _nearest_wall(item, room):
+    """La pared de la sala rectangular más cercana al centro de item; empates en el orden de WALL_SIDES.
+
+    Se mide la distancia a la recta de cada pared (en valor absoluto): un cuadro arrastrado a lo largo
+    de la pared del fondo hasta pasarse de la esquina sigue en la pared del fondo.
+    """
+    origin_x, origin_z, box = rectangle_of(room)
+    x, z = item.center_x - origin_x, item.center_z - origin_z
+    gaps = {"back": abs(z), "left": abs(x), "right": abs(box.width_m - x), "front": abs(box.length_m - z)}
+    # min es estable: con distancias iguales gana la primera de WALL_SIDES.
+    return min(WALL_SIDES, key=lambda side: gaps[side])
+
+
+def _move_to_nearest_wall(current, requested, room, others):
+    """Un objeto de pared movido sin wall: pegado (0 cm) a la pared más cercana a la posición pedida.
+
+    Conserva lo que iba a lo largo de su pared (un cuadro no gira 90°), su altura pedida y su posición a
+    lo largo de la nueva pared, acotada para que quede entero dentro del tramo. Si choca, sube sobre
+    los muebles y se desliza a lo largo de la pared, como con wall (place_on_wall).
+
+    Returns:
+        (objeto, None) o (None, motivo).
+    """
+    along, thickness = _along_and_thickness(current, room, requested.width_m, requested.depth_m)
+    item = replace(requested, width_m=along, depth_m=thickness)
+    return place_on_wall(item, room, _nearest_wall(requested, room), others, centered=False)
+
+
 def _move(current, size, position, room, others):
     """A la posición pedida (esquina mínima x/y; con wall, pegado a esa pared).
 
@@ -262,6 +314,10 @@ def _move(current, size, position, room, others):
         elevation_m=position.elevation_m if position.elevation_m is not None else current.elevation_m,
     )
     if position.wall is None:
+        if _is_wall_object(current, others, room):
+            # Sin wall, un objeto de pared no se queda flotando: va a la pared más cercana (PREGUNTAS 8).
+            result, reason = _move_to_nearest_wall(current, requested, room, others)
+            return result, reason, requested, None
         result, reason = settle_at(requested, room, others)
         return result, reason, requested, None
     _require_rectangle(room)
@@ -279,7 +335,8 @@ def change_object(row, item_id, *, name=None, width_cm=None, depth_cm=None, heig
     """Renombra, cambia medidas o mueve un objeto de row (sin commit); revalida la posición final.
 
     Solo con name, la geometría no se toca. Con position (x/y = esquina mínima en metros, elevation_m y
-    wall opcionales), se pide esa posición; con wall se pega a esa pared (sala rectangular). Sin position,
+    wall opcionales), se pide esa posición; con wall se pega a esa pared (sala rectangular), y sin wall
+    un objeto de pared se pega a la pared más cercana (_is_wall_object, _move_to_nearest_wall). Sin position,
     conserva su centro y su base, y si tocaba una pared sigue pegado a ella. Si la posición choca, pasa al
     hueco libre más cercano (adjusted=True).
 
@@ -315,16 +372,17 @@ def change_object(row, item_id, *, name=None, width_cm=None, depth_cm=None, heig
 # --- Mover a una pared (acción move_object del chat) --------------------------------------------------------
 
 
-def _along_and_thickness(current, room):
+def _along_and_thickness(current, room, width, depth):
     """(ancho a lo largo de la pared, grosor) de un objeto que se va a pegar a otra pared.
 
-    Si ya está pegado a una pared, conserva lo que iba a lo largo de ella (un cuadro sigue siendo igual
-    de ancho); si no, el lado largo va contra la pared (un sofá de espaldas a ella).
+    width y depth son sus medidas finales en x y z. Si current ya está pegado a una pared, conserva lo
+    que iba a lo largo de ella (un cuadro sigue siendo igual de ancho); si no, el lado largo va contra
+    la pared (un sofá de espaldas a ella).
     """
     side = attached_wall(current, room)
     if side is not None:
-        return wall_extents(current.width_m, current.depth_m, side)
-    return max(current.width_m, current.depth_m), min(current.width_m, current.depth_m)
+        return wall_extents(width, depth, side)
+    return max(width, depth), min(width, depth)
 
 
 def move_to_wall(row, item_id, wall):
@@ -344,7 +402,7 @@ def move_to_wall(row, item_id, wall):
     room = room_shape(row)
     _require_rectangle(room)
     current = as_object(piece)
-    along, thickness = _along_and_thickness(current, room)
+    along, thickness = _along_and_thickness(current, room, current.width_m, current.depth_m)
     item = replace(current, width_m=along, depth_m=thickness)
     others = [as_object(other) for other in row.muebles if other is not piece]
     stack = current.kind == "wall"

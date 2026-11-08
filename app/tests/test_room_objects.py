@@ -482,3 +482,123 @@ async def test_moving_to_a_wall_is_refused_without_changes(db_sessions):
     assert foreign.value.status_code == 404
     _, kept = await stored(db_sessions, room_id)
     assert (kept.posicion_x, kept.posicion_z) == (2, 2)
+
+
+# --- PATCH sin wall de un objeto de pared (PREGUNTAS.md 8) -------------------------------------------
+
+
+def gap_to_nearest_wall(stored_piece, width=4, depth=3):
+    """Distancia de la huella a la pared más cercana de una sala [0, width] x [0, depth]."""
+    obj = as_object(stored_piece)
+    x0, x1 = obj.center_x - obj.width_m / 2, obj.center_x + obj.width_m / 2
+    z0, z1 = obj.center_z - obj.depth_m / 2, obj.center_z + obj.depth_m / 2
+    assert -1e-9 <= x0 and x1 <= width + 1e-9 and -1e-9 <= z0 and z1 <= depth + 1e-9
+    return min(x0, z0, width - x1, depth - z1)
+
+
+async def moved_without_wall(db_sessions, room_id, item_id, **position):
+    return await run(db_sessions, room_id, update_object, item_id, position=ItemPlacement(**position))
+
+
+async def test_a_picture_dragged_into_the_room_goes_to_the_nearest_wall(db_sessions):
+    room_id = await new_room(db_sessions)
+    await run(db_sessions, room_id, place_object, **PICTURE)  # pared izquierda, 5 x 60 cm
+    (picture,) = await stored(db_sessions, room_id)
+
+    # Centro pedido (1,525; 0,7): la pared del fondo (z = 0) es la más cercana.
+    result = await moved_without_wall(db_sessions, room_id, picture.id, x=1.5, y=0.4, elevation_m=1.1)
+
+    assert (result.wall, result.adjusted) == ("back", True)
+    (moved,) = await stored(db_sessions, room_id)
+    # Sigue siendo 60 cm a lo largo de la pared y 5 cm de grosor (no gira).
+    assert (moved.ancho, moved.profundidad, moved.alto) == pytest.approx((0.6, 0.05, 0.4))
+    assert (moved.posicion_x, moved.posicion_z, moved.posicion_y) == pytest.approx((1.525, 0.025, 1.1))
+    assert gap_to_nearest_wall(moved) == pytest.approx(0)
+
+
+async def test_a_picture_moved_near_its_own_wall_stays_on_it_at_0_cm(db_sessions):
+    room_id = await new_room(db_sessions)
+    await run(db_sessions, room_id, place_object, **PICTURE)
+    (picture,) = await stored(db_sessions, room_id)
+
+    result = await moved_without_wall(db_sessions, room_id, picture.id, x=0.3, y=0.4)
+
+    assert (result.wall, result.adjusted) == ("left", True)
+    (moved,) = await stored(db_sessions, room_id)
+    assert (moved.posicion_x, moved.posicion_z, moved.posicion_y) == pytest.approx((0.025, 0.7, 1.3))
+
+
+async def test_a_drag_along_the_wall_is_not_adjusted(db_sessions):
+    room_id = await new_room(db_sessions)
+    await run(db_sessions, room_id, place_object, **PICTURE)
+    (picture,) = await stored(db_sessions, room_id)
+
+    result = await moved_without_wall(db_sessions, room_id, picture.id, x=0, y=0.4)
+
+    assert (result.wall, result.adjusted) == ("left", False)
+
+
+async def test_a_picture_past_the_corner_stays_whole_inside_its_wall(db_sessions):
+    room_id = await new_room(db_sessions)
+    await run(db_sessions, room_id, place_object, **{**PICTURE, "wall": "back"})
+    (picture,) = await stored(db_sessions, room_id)
+
+    result = await moved_without_wall(db_sessions, room_id, picture.id, x=3.9, y=0)
+
+    assert (result.wall, result.adjusted) == ("back", True)
+    (moved,) = await stored(db_sessions, room_id)
+    # Entero dentro del tramo: de 3,4 a 4,0 m.
+    assert (moved.posicion_x, moved.posicion_z) == pytest.approx((3.7, 0.025))
+
+
+async def test_a_floating_picture_goes_back_to_a_wall(db_sessions):
+    floating = piece("Cuadro", 0.6, 0.05, 0.4, 2, 1.5, y=1.3)  # en medio de la sala, sin pared
+    room_id = await new_room(db_sessions, pieces=[floating])
+    (picture,) = await stored(db_sessions, room_id)
+
+    result = await moved_without_wall(db_sessions, room_id, picture.id, x=1.7, y=2.6)
+
+    assert result.wall == "front"
+    (moved,) = await stored(db_sessions, room_id)
+    assert (moved.posicion_x, moved.posicion_z, moved.posicion_y) == pytest.approx((2.0, 2.975, 1.3))
+    assert gap_to_nearest_wall(moved) == pytest.approx(0)
+
+
+async def test_a_picture_dropped_on_another_slides_without_overlapping(db_sessions):
+    room_id = await new_room(db_sessions)
+    await run(db_sessions, room_id, place_object, **{**PICTURE, "wall": "back"})
+    await run(db_sessions, room_id, place_object, **{**PICTURE, "name": "Cuadro 2", "wall": "right"})
+    first, second = await stored(db_sessions, room_id)
+
+    # Encima del primero (centro 2; 0,025), a la misma altura.
+    result = await moved_without_wall(db_sessions, room_id, second.id, x=1.8, y=0.3)
+
+    assert (result.wall, result.adjusted) == ("back", True)
+    first, second = await stored(db_sessions, room_id)
+    assert not overlaps(as_object(first), as_object(second))
+    assert gap_to_nearest_wall(second) == pytest.approx(0)
+    assert (second.ancho, second.profundidad) == pytest.approx((0.6, 0.05))
+
+
+async def test_an_object_resting_on_furniture_still_moves_freely(db_sessions):
+    backpack = piece("Mochila", 0.3, 0.3, 0.4, 3.4, 1.0, y=0.5)  # encima de la cama
+    room_id = await new_room(db_sessions, pieces=[BED, backpack])
+    _, bag = await stored(db_sessions, room_id)
+
+    result = await moved_without_wall(db_sessions, room_id, bag.id, x=3.2, y=0.4)
+
+    assert result.wall is None
+    _, moved = await stored(db_sessions, room_id)
+    assert (moved.posicion_x, moved.posicion_z, moved.posicion_y) == pytest.approx((3.35, 0.55, 0.5))
+
+
+async def test_a_raised_object_in_an_l_room_keeps_the_free_move(db_sessions):
+    shelf = piece("Repisa", 0.5, 0.2, 0.1, 1, 1, y=1.5)
+    room_id = await new_room(db_sessions, vertices=L_ROOM, width=4, depth=4, pieces=[shelf])
+    (stored_shelf,) = await stored(db_sessions, room_id)
+
+    result = await moved_without_wall(db_sessions, room_id, stored_shelf.id, x=0.5, y=0.5)
+
+    assert result.wall is None
+    (moved,) = await stored(db_sessions, room_id)
+    assert (moved.posicion_x, moved.posicion_z, moved.posicion_y) == pytest.approx((0.75, 0.6, 1.5))
