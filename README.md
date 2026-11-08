@@ -36,10 +36,12 @@ app/
 ├── geometry/               octree, colisiones, RANSAC, sala poligonal (room.py), layout y endpoints /geometry
 ├── services/omniroute.py   cliente de OmniRoute
 ├── services/scene_assistant.py  contexto y prompt del chat sobre una sala
+├── services/chat_actions.py     acciones del chat (añadir, quitar y mover objetos)
 ├── services/room_objects.py     añadir, mover y borrar objetos de una sala (una sola lógica)
+├── services/room_undo.py        la pila de Deshacer de cada sala
 ├── utils/                  tipos compartidos, ayudas de imagen, logs (logging_config) y middlewares
-├── routers/spaces.py       POST /analyze, catálogo, listado, POST /rooms/{id}/analyze-photo y /photo-undo
-├── routers/rooms.py        salas poligonales editables, sus muebles y el layout
+├── routers/spaces.py       POST /analyze, catálogo, listado y POST /rooms/{id}/analyze-photo
+├── routers/rooms.py        salas poligonales editables, sus muebles, el layout y POST /rooms/{id}/undo
 ├── routers/chat.py         POST /api/v1/chat
 └── tests/                  pruebas unitarias y de integración
 ```
@@ -108,8 +110,8 @@ responden 404, igual que los inexistentes. `/`, `/api/v1/health` y `/api/v1/auth
 | DELETE | `/api/v1/spaces/rooms/{id}/items/{itemId}` | Borra un objeto → 204 sin cuerpo. |
 | POST | `/api/v1/spaces/rooms/{id}/layout` | Distribuye el catálogo dentro del polígono real (sin IA) y guarda el resultado. |
 | POST | `/api/v1/spaces/rooms/{id}/analyze-photo` | Multipart (`file`, `confirm_replace`, `instrucciones`): la IA con visión estima la sala y hasta 10 objetos, que reemplazan la forma y los muebles de la sala. |
-| POST | `/api/v1/spaces/rooms/{id}/photo-undo` | Sin cuerpo: devuelve la sala a como estaba antes de su última foto → `{room, items, remaining}`. 409 si no hay nada que deshacer. |
-| POST | `/api/v1/chat` | Chat sobre una sala: `{roomId, messages}` → `{role: "assistant", content}`. |
+| POST | `/api/v1/spaces/rooms/{id}/undo` | Sin cuerpo: deshace el último cambio de la sala (foto, chat, objetos, layout o vértices) → `{room, items, remaining, undone}`. 409 si no hay nada que deshacer. `/photo-undo` es un alias obsoleto. |
+| POST | `/api/v1/chat` | Chat sobre una sala: `{roomId, messages}` → `{role: "assistant", content, changes}`; puede añadir, quitar y mover objetos. |
 | POST | `/geometry/point-cloud` | Solo el filtro RANSAC sobre una nube de puntos. |
 | POST | `/geometry/collision` | Solo la validación de colisiones de una caja. |
 
@@ -205,27 +207,31 @@ lugar, `app/geometry/units.py`.
     cambia.
   - FastAPI parsea el multipart antes de autenticar, así que `BodySizeLimitMiddleware` rechaza con 413
     un cuerpo de más de 5 MB + 64 KB antes de parsearlo, haya `Content-Length` o venga en chunks.
-- **Deshacer la foto.** `POST /rooms/{id}/photo-undo`, sin cuerpo. Contrato completo en
-  `CONTRATO-DESHACER-FOTO.md`, en la carpeta que contiene los tres repos.
-  - Antes de aplicar una foto se copia lo que va a sobrescribir (`vertices`, también si es `null`,
-    `ancho`, `profundidad`, `alto` y los muebles con sus medidas y su centro). La copia se apila solo
-    si el guardado de la foto sale bien: una foto con 409, 413, 415, 422, 429, 502, 503 o 504 no deja
-    nada que deshacer.
-  - `app/services/photo_undo.py`: una `LinkedStack` de capacidad 5 por sala (con la pila llena se
-    descarta la copia más antigua, pasando las demás por una pila auxiliar) dentro de una `LruCache`
-    de 200 salas con clave `(cuenta, sala)`.
-  - Respuesta 200: `{room, items, remaining}`, con `room` e `items` como en `analyze-photo`;
-    `remaining` es cuántas fotos más se pueden deshacer. Errores: 401; 404 sala inexistente o ajena
-    (antes de mirar la pila); **409** si no queda ninguna foto que deshacer; 503/500 si falla la base
-    de datos, y entonces la copia vuelve a la pila.
+- **Deshacer (una sola pila por sala).** `POST /rooms/{id}/undo`, sin cuerpo; `POST
+  /rooms/{id}/photo-undo` es un alias obsoleto de la misma ruta. Contrato completo en
+  `CONTRATO-FASE2.md`, en la carpeta que contiene los tres repos.
+  - Antes de cada cambio guardado de la forma o de los objetos de una sala se copia cómo estaba
+    (`vertices`, también si es `null`, `ancho`, `profundidad`, `alto` y los objetos con sus medidas y su
+    centro): la foto (`photo`), un mensaje del chat con acciones (`chat`, una copia por mensaje),
+    `POST`/`PATCH`/`DELETE` de objetos (`add`, `update`, `delete`), el layout guardado (`layout`) y la
+    edición de vértices (`vertices`). La copia se apila solo si el guardado sale bien
+    (`commit_with_undo`): un cambio rechazado o fallido no deja nada que deshacer.
+  - Deshacer quita siempre la copia más reciente (LIFO), así que nunca borra trabajo posterior: para
+    volver a antes de una foto hay que deshacer antes lo que se hizo después.
+  - `app/services/room_undo.py`: una `LinkedStack` de capacidad 50 por sala dentro de una `LruCache` de
+    100 salas con clave `(cuenta, sala)`. Con la pila llena se descarta la copia más antigua (pasando
+    las demás por una pila auxiliar; el porqué está en `docs/DEFENSE.md`). Además, las copias de una sala
+    suman como mucho 2000 objetos: si se pasan, también se descartan las más antiguas. Así la memoria
+    queda acotada (unos 60 MB en el peor caso).
+  - Respuesta 200: `{room, items, remaining, undone}`, con `room` e `items` como en `analyze-photo`;
+    `remaining` es cuántos cambios más se pueden deshacer y `undone` qué cambio se deshizo. Los
+    objetos se recrean desde la copia, así que sus `id` cambian. Errores: 401; 404 sala inexistente o
+    ajena (antes de mirar la pila); **409** si no queda nada que deshacer; 503/500 si falla la base de
+    datos, y entonces la copia vuelve a la pila.
   - No llama a la IA ni gasta cuota: funciona aunque la cuota esté agotada. No hay Rehacer: repetir
     una foto deshecha vuelve a costar 3 llamadas.
-  - Deshacer vuelve exactamente al estado de antes de la foto. Dos fotos simultáneas en la misma sala
-    guardan el mismo estado previo.
   - **El historial vive en memoria**, como los límites de peticiones: se pierde si Render reinicia el
     servidor (entonces responde 409 explicándolo) y necesita un único worker de uvicorn.
-  - **Deshacer la foto nunca borra trabajo posterior:** añadir, mover o borrar un objeto con las rutas
-    de abajo vacía la pila de la sala (solo si el guardado sale bien); desde entonces responde 409.
 - **Objetos de la sala.** `POST`, `PATCH` y `DELETE /rooms/{id}/items[/{itemId}]`. Contrato completo en
   `CONTRATO-FASE0.md`, en la carpeta que contiene los tres repos. Una sola lógica en
   `app/services/room_objects.py`, pensada también para el formulario manual y las acciones del chat;
@@ -236,6 +242,8 @@ lugar, `app/geometry/units.py`.
     si no, 422). Se pega a la pared pedida, centrado; la base por defecto deja el centro a 1,50 m
     (`elevationCm` la cambia) y la puerta va al suelo. Si choca, sube sobre el mueble de suelo y se
     desliza a lo largo de la pared. `widthCm` es el ancho a lo largo de la pared y `depthCm` el grosor.
+    Un objeto de suelo arrimado a una pared (PATCH con `position.wall` o el chat) solo se desliza:
+    nunca se sube encima de otro mueble.
   - **Suelo:** primer hueco libre, por filas desde la esquina mínima con el paso del layout, dentro del
     polígono real y sin solaparse en 3D con nada (un cuadro alto no estorba a un taburete). Búsqueda
     acotada con el tope por mueble del layout.
@@ -249,14 +257,28 @@ lugar, `app/geometry/units.py`.
     infinitos ni conversiones de tipo ("2" no es 2), campos desconocidos rechazados; 422 sin eco.
   - Errores: 401; 404 sala ajena o inexistente, u objeto que no es de esa sala; **409** sin sitio, más
     alto que la sala o sala con 200 objetos; 422; 503/500 si falla la base de datos (rollback, la pila de
-    la foto no se toca). Dos peticiones simultáneas pueden dejar 201 objetos o un solape (aceptado).
+    Deshacer no se toca). Dos peticiones simultáneas pueden dejar 201 objetos o un solape (aceptado).
+  - Cada cambio correcto se puede deshacer con `POST /rooms/{id}/undo` (ver arriba).
+- **Chat con acciones.** `POST /api/v1/chat`. Contrato completo en `CONTRATO-FASE2.md`, sección 2.
+  - Una sola llamada al modelo por mensaje (1 de cuota), sin bucle de herramientas. Se ofrecen
+    `add_object`, `remove_object` (por nombre; si hay varios, el chat pregunta cuál) y `move_object`
+    (a una pared, centrado). `app/services/chat_actions.py` valida las llamadas (son datos no
+    confiables; las de añadir, con el mismo `ItemCreate` de la ruta), aplica como mucho 3 con la lógica
+    de `room_objects.py` y redacta la respuesta: con acciones, el texto lo escribe el servidor, así que
+    nunca dice que hizo algo que falló.
+  - Respuesta: `{role, content, changes: [{action: "added"|"removed"|"moved", name, where}]}`;
+    `changes` es `[]` si nada cambió. Todas las acciones de un mensaje se guardan en un commit con una
+    copia `chat` para Deshacer; si el commit falla, ninguna queda (503/500).
+  - El prompt pide español sencillo, de 2 a 4 frases y sin coordenadas, fórmulas ni Markdown. Los datos
+    de la sala (`<datos_sala>`) ya no llevan coordenadas: medidas, si es rectangular y cada objeto con su
+    `id`, su nombre, su ubicación en palabras y sus medidas en cm.
 
 ## Límites de peticiones
 
 Los contadores viven en memoria (`app/utils/rate_limit.py`, ventanas deslizantes, sin dependencias):
 se pierden al reiniciar y no se comparten entre procesos. La imagen Docker arranca un único worker de
 uvicorn en una instancia de Render; con varios workers, cada uno permitiría el límite completo. El
-historial de Deshacer de la foto también vive en memoria con la misma condición.
+historial de Deshacer también vive en memoria con la misma condición.
 Superar un límite responde 429 con la cabecera `Retry-After` en segundos. CORS la expone
 (`expose_headers`), así que el frontend puede leerla desde otro dominio y decir cuánto esperar.
 

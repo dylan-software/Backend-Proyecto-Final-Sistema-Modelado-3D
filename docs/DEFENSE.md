@@ -61,7 +61,7 @@ Rasgos comunes:
 | Cola FIFO | `LinkedQueue` + `QueueNode` (`linked_queue.py`) | `enqueue`, `dequeue`, `peek`, `peek_back`, `len`: O(1). Recorrer, `clear`: O(n) | **Sí:** limitador de peticiones a la IA y de login/registro (`app/utils/rate_limit.py`) |
 | Lista doblemente enlazada | `DoublyLinkedList` + `DoublyNode` (`doubly_linked_list.py`) | `push_front/back`, `pop_front/back`, `remove(nodo)`, `move_to_front(nodo)`: O(1). Recorrer: O(n) | **Sí, como base de `LruCache`** |
 | Caché LRU | `LruCache` (`lru_cache.py`) = `DoublyLinkedList` + `dict` | `get`, `put`, `discard`, `peek`, expulsar el menos usado: O(1) promedio | **Sí:** validador de coherencia de `POST /catalog` y almacén de pilas de deshacer |
-| Pila LIFO | `LinkedStack` + `StackNode` (`linked_stack.py`) | `push`, `pop`, `peek`, `len`: O(1). Recorrer, `clear`: O(n) | **Sí:** deshacer la foto a 3D (`app/services/photo_undo.py`) |
+| Pila LIFO | `LinkedStack` + `StackNode` (`linked_stack.py`) | `push`, `pop`, `peek`, `len`: O(1). Recorrer, `clear`: O(n) | **Sí:** Deshacer de cada sala: foto, chat, objetos, layout y vértices (`app/services/room_undo.py`) |
 | Arreglo estático | `FixedArray` (`fixed_array.py`) | `get`, `set`, `a[i]`: O(1). `fill`, `index_of`, recorrer: O(n) | **No** (creado y probado; ver 2.6) |
 | Lista circular doble | `CircularDoublyLinkedList` + `RingNode` (`circular_doubly_linked_list.py`) | `append`, `insert_after(nodo)`, `remove(nodo)`: O(1). `get/set/insert/remove_at`: O(min(i, n−i)). `rotate(k)`: O(min(k, n−k)) | **No** (creada y probada; ver 2.7) |
 
@@ -120,30 +120,70 @@ nombre es un mueble coherente. `cached_furniture_coherence` (`app/services/seman
 - **Efecto medible:** la segunda vez que se guarda "Sofa" no se llama al modelo. La petición sigue contando
   en la cuota de IA, así que el contrato de la API no cambia.
 
-**Dónde se usa (2): almacén de pilas de deshacer.** Ver 2.4. La LRU limita a 200 las salas con historial.
+**Dónde se usa (2): almacén de pilas de deshacer.** Ver 2.4. La LRU limita a 100 las salas con historial.
 
 **Pruebas.** `test_doubly_linked_list.py` (25 casos), `test_lru_cache.py` (20 casos, contra una LRU de
 referencia hecha con `OrderedDict` solo en la prueba) y `test_coherence_cache.py` (12 casos de la integración).
 
-### 2.4 Pila: `LinkedStack` para deshacer la foto a 3D
+### 2.4 Pila: `LinkedStack` para el Deshacer de cada sala
 
 **Clase.** Lista simplemente enlazada cuya cabeza es la cima. Cada `StackNode` apunta al de debajo. `push` y
 `pop` son O(1).
 
-**Dónde se usa.** `POST /api/v1/spaces/rooms/{room_id}/photo-undo`, en `app/routers/spaces.py`. La lógica está
-en `app/services/photo_undo.py`.
-- Antes de que `analyze-photo` sobrescriba la sala, se toma una copia **inmutable** (`RoomSnapshot`, una
-  `dataclass` congelada). Contiene los vértices, el ancho, la profundidad, el alto y los muebles con sus
-  medidas y su posición. No guarda referencias a filas de SQLAlchemy.
-- La copia **se apila solo si el commit de la foto sale bien**. Una foto que falla (409, 413, 415, 422, 429,
-  502, 503, 504) no apila nada.
-- `PhotoUndoStore` es una `LruCache` de 200 salas con clave `(user_id, room_id)`. Cada valor es una
-  `LinkedStack` de capacidad 5.
+**Dónde se usa.** `POST /api/v1/spaces/rooms/{room_id}/undo`, en `app/routers/rooms.py` (`photo-undo` es un
+alias obsoleto). La lógica está en `app/services/room_undo.py`. Hay **una sola pila por sala** para todos
+sus cambios, no una por tipo de cambio.
+- Antes de cada cambio guardado de la sala se toma una copia **inmutable** (`RoomSnapshot`, una `dataclass`
+  congelada): vértices, ancho, profundidad, alto y los objetos con sus medidas y su posición, más `change`,
+  el cambio que vino después. No guarda referencias a filas de SQLAlchemy. Apilan la foto a 3D, cada
+  mensaje del chat con acciones (una copia por mensaje, aunque tenga 3 acciones), añadir, cambiar o borrar
+  un objeto, el layout guardado y la edición de vértices.
+- La copia **se apila solo si el commit sale bien** (`commit_with_undo`, el único punto donde se guarda un
+  cambio con Deshacer). Un cambio rechazado o fallido no apila nada.
+- Como la pila es LIFO, Deshacer siempre quita **el último cambio**, sea del tipo que sea: deshacer una foto
+  nunca puede borrar el trabajo hecho después, porque antes hay que deshacer ese trabajo.
+- `RoomUndoStore` es una `LruCache` de 100 salas con clave `(user_id, room_id)`. Cada valor es una
+  `LinkedStack` de capacidad 50.
 - **Pila llena:** `LinkedStack` lanza `CapacityError`. Para descartar la copia más antigua sin añadir
   operaciones a la clase, `_drop_oldest` usa una **segunda pila auxiliar**: pasa todo a la auxiliar, quita su
-  cima (que era el fondo) y devuelve el resto. Cuesta O(5).
+  cima (que era el fondo) y devuelve el resto. Cuesta O(n) con n ≤ 50. La razón de descartar en lugar de
+  rechazar está en 2.4.1.
+- **Memoria acotada:** además, las copias de una sala suman como mucho 2000 objetos; si se pasan, también se
+  descartan las más antiguas. Peor caso: 100 salas × 2000 objetos ≈ 60 MB. Sin ese tope serían 100 × 50 ×
+  200 objetos ≈ 300 MB, demasiado para el plan Starter de Render.
 - **Deshacer:** desapila (sin `await` entre leer y quitar), restaura con una lista de vértices **nueva**,
-  hace commit y responde `{room, items, remaining}`. Si el commit falla, la copia **vuelve a la pila**.
+  hace commit y responde `{room, items, remaining, undone}`. Si el commit falla, la copia **vuelve a la
+  pila**. Los objetos se recrean desde la copia, así que sus `id` cambian.
+
+#### 2.4.1 Por qué, con la pila llena, se descarta la copia más antigua en vez de rechazar el cambio
+
+El plan inicial decía "con la pila llena se rechaza el cambio". Se eligió lo contrario, descartar la copia
+más antigua (como hacen los editores de texto o de imagen), por estas razones:
+
+1. **Rechazar bloquearía la aplicación, no solo el Deshacer.** Con una sola pila por sala, cada cambio
+   apila una copia. Si la pila llena rechazara el cambio, tras 50 cambios la sala quedaría congelada: no se
+   podría hacer otra foto, ni pedir nada al chat, ni añadir, mover o borrar un objeto. El usuario no ha
+   hecho nada mal; solo ha trabajado mucho en la misma sala.
+2. **Para desbloquear habría que perder trabajo.** La única salida sería deshacer algo para liberar sitio.
+   Como no hay Rehacer, eso borra de verdad el último cambio, que suele ser el que el usuario quiere
+   conservar. Descartar la copia más antigua solo pierde la posibilidad de volver a un estado de hace más de
+   50 cambios, que casi nunca se usa.
+3. **El valor de un historial está en los cambios recientes.** Deshacer sirve sobre todo para corregir lo
+   último que salió mal. Las copias más antiguas son las que menos valor tienen y las únicas que se pierden.
+4. **El tope de memoria necesita descartar de todos modos.** El límite de 2000 objetos por sala no puede
+   rechazar cambios (una sala de 200 objetos lo alcanzaría en 10 cambios). Si la pila llena rechazara y el
+   tope de memoria descartara, habría dos políticas para el mismo problema. Con descarte, la regla es una
+   sola: siempre se conserva lo más reciente.
+5. **No cambia la estructura ni su coste.** La pila sigue siendo una `LinkedStack` pura: `push` y `pop` en
+   O(1) y `CapacityError` al llenarse, que es lo que garantiza el límite. El descarte lo hace el almacén con
+   una pila auxiliar (O(n), n ≤ 50, solo cuando la pila está llena), sin añadir a la clase operaciones que
+   no son de pila. Así se demuestran las dos cosas: el tope de la estructura y cómo se respeta sin bloquear
+   al usuario.
+6. **Ya estaba probado.** Es la misma política que tenía el Deshacer de la foto (con 5 copias), así que se
+   reutiliza código probado en lugar de introducir un comportamiento nuevo.
+
+Contrapartida aceptada: tras más de 50 cambios en la misma sala no se puede volver al estado inicial con
+Deshacer. Se documenta, y la respuesta `remaining` dice siempre cuántos cambios quedan.
 
 **Errores.**
 
@@ -157,12 +197,13 @@ en `app/services/photo_undo.py`.
 No gasta cuota de IA.
 
 **Frontend.** El botón "Deshacer foto" (`PhotoUndoButton.tsx`) aparece junto a "Foto a 3D" después de una
-foto hecha en la visita actual a la página.
+foto hecha en la visita actual a la página (pendiente de pasar a un único botón "Deshacer").
 
-**Pruebas.** `test_linked_stack.py` (20 casos) y `test_photo_undo.py` (23 casos: 11 de unidad del almacén y
-12 de la API).
-- Orden LIFO con dos fotos.
-- Tope de 5: se descarta la más antigua.
+**Pruebas.** `test_linked_stack.py` (20 casos) y `test_room_undo.py` (34 casos del almacén y de la API),
+más los casos de Deshacer de `test_room_objects.py`, `test_room_items_routes.py` y `test_chat.py`.
+- Orden LIFO con dos fotos y entre tipos de cambio (foto → objeto → deshacer el objeto y luego la foto).
+- Tope de 50 y tope de objetos: se descartan las más antiguas.
+- Un mensaje del chat con 3 acciones se deshace de una vez.
 - 404 de una sala ajena sin tocar la pila del dueño.
 - 409 tras simular un reinicio.
 - Funciona con la cuota agotada.
@@ -232,7 +273,7 @@ Desde la carpeta del backend:
 
 ```powershell
 .venv\Scripts\python.exe -m pytest -q app/tests/test_linked_queue.py app/tests/test_doubly_linked_list.py app/tests/test_linked_stack.py app/tests/test_lru_cache.py app/tests/test_fixed_array.py app/tests/test_circular_doubly_linked_list.py
-.venv\Scripts\python.exe -m pytest -q app/tests/test_rate_limit_queue.py app/tests/test_coherence_cache.py app/tests/test_photo_undo.py
+.venv\Scripts\python.exe -m pytest -q app/tests/test_rate_limit_queue.py app/tests/test_coherence_cache.py app/tests/test_room_undo.py
 ```
 
 En la aplicación desplegada:
@@ -279,14 +320,14 @@ En la aplicación desplegada:
 
 ---
 
-## 5. Cifras de las pruebas (2026-11-07, `dev`, backend `dc9fb03` y frontend `b5bc525`)
+## 5. Cifras de las pruebas (`dev`; backend `f156b17` el 2026-11-08, frontend `b5bc525` el 2026-11-07)
 
 | Qué | Resultado |
 |---|---|
-| Backend, suite completa (`pytest`, Python 3.14.7 local) | **700 passed** en 52,60 s |
+| Backend, suite completa (`pytest`, Python 3.14.7 local) | **848 passed** en 56,31 s |
 | Backend, `ruff check` | All checks passed |
 | Pruebas de las seis clases de `app/structures/` | **156**: cola 23, lista doble 25, pila 20, LRU 20, arreglo 29, anillo 39 |
-| Pruebas de las integraciones | **42**: cola en el limitador 7, LRU de coherencia 12, deshacer la foto 23 |
+| Pruebas de las integraciones | **53**: cola en el limitador 7, LRU de coherencia 12, Deshacer de la sala 34 |
 | Operaciones aleatorias | 5000 por semilla, comparadas tras cada paso con `deque`, `list` u `OrderedDict` de referencia y con `check_invariants()` |
 | Frontend (`vitest`) | **22 archivos, 219 passed** |
 
