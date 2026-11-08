@@ -21,10 +21,12 @@ del polígono real) y settle_at (revalidar una posición pedida). Esas funciones
 app.geometry.room.Room, en sus propias coordenadas (el eje y del polígono es el eje z de los objetos).
 """
 
+import math
 import unicodedata
 from dataclasses import dataclass, replace
 
 from app.geometry.layout import MAX_PIECE_WORK, _steps, grid_step
+from app.structures import FixedArray
 
 # Objeto pequeño que se puede poner encima de otro (en metros y fracción del área del de abajo).
 STACK_MAX_HEIGHT_M = 0.6
@@ -46,6 +48,8 @@ WALL_SIDES = ("back", "left", "right", "front")
 ATTACH_TOLERANCE_M = 0.01
 # Relativa al área: el polígono es un rectángulo si su área es la de su caja delimitadora.
 RECTANGLE_AREA_TOLERANCE = 1e-6
+# Celdas por lado de la rejilla del suelo (FloorCells): 16 x 16 = 256 casillas fijas.
+FLOOR_CELLS_PER_SIDE = 16
 
 
 @dataclass(frozen=True)
@@ -113,6 +117,104 @@ def inside_room(item, room):
 
 def _clamp(value, low, high):
     return min(max(value, low), high)
+
+
+# --- Ocupación con arreglos de tamaño fijo (FixedArray) ---------------------------------------------
+
+
+class FloorCells:
+    """Celdas del suelo: una rejilla fija sobre la caja de la sala que dice qué objetos hay cerca.
+
+    La caja se parte en FLOOR_CELLS_PER_SIDE x FLOOR_CELLS_PER_SIDE celdas guardadas en un FixedArray
+    (fila por fila: casilla = fila * columnas + columna). Cada casilla tiene la lista de posiciones (en
+    items) de los objetos cuya huella toca esa celda, con una celda de margen a cada lado; lo que cae
+    fuera de la caja va a la celda del borde. near(objeto) devuelve, en el orden de items, los objetos
+    registrados en las celdas que toca su huella.
+
+    Es un prefiltro EXACTO: si dos huellas se solapan comparten un punto, y ese punto cae en una celda
+    de las dos (la cuenta de la celda es monótona), así que near nunca deja fuera un objeto que choque;
+    overlaps decide después igual que antes.
+
+    Costes (c = celdas por lado, n = objetos, k = celdas que toca una huella, m = objetos devueltos):
+        construir: O(c² + suma de las k de cada objeto); near: O(k + m log m).
+    Memoria: O(c² + suma de las k).
+    """
+
+    __slots__ = ("_cell_d", "_cell_w", "_cells", "_items", "_min_x", "_min_z", "_side")
+
+    def __init__(self, box, items):
+        """box: caja delimitadora (min_x, min_y, max_x, max_y; su y es el eje z). items: objetos colocados."""
+        self._side = FLOOR_CELLS_PER_SIDE
+        self._min_x, self._min_z = box.min_x, box.min_y
+        self._cell_w = (box.max_x - box.min_x) / self._side or 1.0
+        self._cell_d = (box.max_y - box.min_y) / self._side or 1.0
+        self._cells = FixedArray(self._side * self._side)
+        self._items = FixedArray(len(items)) if items else None
+        for position, item in enumerate(items):
+            self._items[position] = item
+            first_col, last_col, first_row, last_row = self._span(item)
+            for row in range(max(first_row - 1, 0), min(last_row + 1, self._side - 1) + 1):
+                for col in range(max(first_col - 1, 0), min(last_col + 1, self._side - 1) + 1):
+                    slot = row * self._side + col
+                    if self._cells[slot] is None:
+                        self._cells[slot] = []
+                    self._cells[slot].append(position)
+
+    def _cell(self, value, origin, size):
+        """Índice de celda de una coordenada, acotado a la rejilla. O(1)."""
+        return min(max(math.floor((value - origin) / size), 0), self._side - 1)
+
+    def _span(self, item):
+        """(primera columna, última columna, primera fila, última fila) que toca la huella. O(1)."""
+        x0, x1, z0, z1 = footprint(item)
+        return (
+            self._cell(x0, self._min_x, self._cell_w),
+            self._cell(x1, self._min_x, self._cell_w),
+            self._cell(z0, self._min_z, self._cell_d),
+            self._cell(z1, self._min_z, self._cell_d),
+        )
+
+    def near(self, item):
+        """Los objetos que pueden solaparse con item, sin repetir y en el orden en que se dieron."""
+        if self._items is None:
+            return []
+        first_col, last_col, first_row, last_row = self._span(item)
+        found = set()
+        for row in range(first_row, last_row + 1):
+            for col in range(first_col, last_col + 1):
+                found.update(self._cells[row * self._side + col] or ())
+        return [self._items[position] for position in sorted(found)]
+
+
+def wall_strip(item, axis, placed):
+    """Los objetos que ocupan la franja de pared de item: los únicos con los que puede chocar al deslizarse.
+
+    Un objeto pegado a su pared solo se mueve a lo largo de axis ("x" o "z"); su extensión en el otro eje
+    (la franja) no cambia. Un objeto cuya huella no se solapa con esa franja nunca puede chocar con él,
+    así que se descarta (la misma condición que usa overlaps). Los que quedan, con sus tramos a lo largo
+    de la pared, se guardan en un FixedArray del tamaño justo, en el orden de placed.
+
+    Returns:
+        FixedArray con los objetos de la franja, o () si no hay ninguno. O(n), dos pasadas.
+    """
+    x0, x1, z0, z1 = footprint(item)
+    low, high = (z0, z1) if axis == "x" else (x0, x1)
+
+    def in_strip(other):
+        ox0, ox1, oz0, oz1 = footprint(other)
+        other_low, other_high = (oz0, oz1) if axis == "x" else (ox0, ox1)
+        return _span_overlap(low, high, other_low, other_high) > EPSILON
+
+    count = sum(1 for other in placed if in_strip(other))
+    if count == 0:
+        return ()
+    strip = FixedArray(count)
+    position = 0
+    for other in placed:
+        if in_strip(other):
+            strip[position] = other
+            position += 1
+    return strip
 
 
 def snap_to_wall(item, room):
@@ -260,6 +362,8 @@ def _settle_on_wall(item, axis, placed, room, stack=True):
     Returns:
         (objeto, None) o (None, motivo).
     """
+    # Solo cuentan los objetos de la franja de esta pared (tramos ocupados): el resultado es el mismo.
+    placed = wall_strip(item, axis, placed)
     if stack and not is_door(item):
         raised = _raise_above_furniture(item, placed, room)
         if raised is None:
@@ -391,6 +495,8 @@ def first_free_floor_spot(item, room, placed, max_work=MAX_PIECE_WORK):
     Recorre la caja delimitadora desde su esquina mínima, por filas (x y luego z), con el paso grid_step
     del layout, y acepta la primera huella dentro del polígono real que no se solapa en 3D con nada de
     placed. Determinista. Cada candidato cuesta (vértices + objetos colocados) unidades, hasta max_work.
+    Cada candidato solo se compara con los objetos de las celdas del suelo que toca (FloorCells), con el
+    mismo resultado que comparándolo con todos.
 
     Returns:
         (objeto, None) o (None, motivo).
@@ -399,6 +505,7 @@ def first_free_floor_spot(item, room, placed, max_work=MAX_PIECE_WORK):
         return None, REASON_TOO_TALL
     box = room.bounding_box()
     step = grid_step(box)
+    cells = FloorCells(box, placed)
     cost = len(room.vertices) + len(placed)
     spent = 0
     for z0 in _steps(box.min_y, box.max_y - item.depth_m, step):
@@ -410,7 +517,7 @@ def first_free_floor_spot(item, room, placed, max_work=MAX_PIECE_WORK):
                 item, center_x=x0 + item.width_m / 2, center_z=z0 + item.depth_m / 2, elevation_m=0.0
             )
             if room.contains_rectangle(x0, z0, item.width_m, item.depth_m) and not any(
-                overlaps(candidate, other) for other in placed
+                overlaps(candidate, other) for other in cells.near(candidate)
             ):
                 return candidate, None
     return None, REASON_NO_SPACE
