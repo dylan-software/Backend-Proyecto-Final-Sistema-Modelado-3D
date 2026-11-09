@@ -22,6 +22,7 @@ from app.routers.errors import DATABASE_ERRORS, database_error
 from app.routers.groups import load_owned_group
 from app.schemas.room import (
     MAX_LAYOUT_ITEMS,
+    MAX_VERTICES,
     ItemCreate,
     ItemUpdate,
     LayoutRequest,
@@ -293,15 +294,29 @@ async def insert_vertex(
 
     Raises:
         HTTPException: 401 no valid session, 404 no such room for this account, 422 afterIndex out of
-            range or the polygon would become invalid, 503 database failure.
+            range, the room already has MAX_VERTICES vertices or the polygon would become invalid,
+            503 database failure.
     """
     return await _edit_room(
         session,
         room_id,
         current_user,
-        lambda room: room.insert_vertex(body.after_index, (body.x, body.y)),
+        lambda room: _insert_vertex_within_limit(room, body.after_index, (body.x, body.y)),
         undo_store,
     )
+
+
+def _insert_vertex_within_limit(room, after_index, point):
+    """Inserta un vértice sin pasar del tope de POST /rooms (MAX_VERTICES).
+
+    Así toda sala guardada cabe en RoomCreate y en el archivo de la importación.
+
+    Raises:
+        RoomError: la sala ya tiene MAX_VERTICES vértices, o los de Room.insert_vertex.
+    """
+    if len(room.vertices) >= MAX_VERTICES:
+        raise RoomError(f"insert_vertex: a room can have at most {MAX_VERTICES} vertices")
+    room.insert_vertex(after_index, point)
 
 
 @router.delete("/{room_id}/vertices/{index}", response_model=RoomDetail)
