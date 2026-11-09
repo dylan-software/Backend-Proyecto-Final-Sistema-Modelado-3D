@@ -82,6 +82,9 @@ de esta carpeta.
 | `LOGIN_FAILURES_PER_EMAIL`, `LOGIN_FAILURE_WINDOW_MINUTES` | Intentos fallidos de login por email (10 en 15 minutos por defecto). Más allá, 429 con `Retry-After`. |
 | `REGISTRATIONS_PER_HOUR`, `REGISTRATIONS_PER_IP_PER_HOUR` | Registros por hora en total (20) y por IP de cliente (5, de mejor esfuerzo). Más allá, 429 con `Retry-After`. |
 | `IMPORTS_PER_HOUR` | Proyectos importados correctamente por cuenta y hora (20 por defecto). Más allá, `POST /rooms/import` responde 429 con `Retry-After`. |
+| `MAX_PUBLICATIONS_PER_USER` | Proyectos publicados a la vez por cuenta en la red social (20 por defecto). Al llegar, publicar uno nuevo responde 409. |
+| `PUBLICATION_CHANGES_PER_HOUR` | Publicar, actualizar o despublicar correctamente, por cuenta y hora (30 por defecto). Más allá, 429 con `Retry-After`. |
+| `SOCIAL_READS_PER_MINUTE` | Lecturas del catálogo de la red social por cuenta y minuto (60 por defecto). Más allá, 429 con `Retry-After`. |
 | `TRUSTED_PROXY_HOPS` | Proxies propios delante del servidor que añaden entradas a `X-Forwarded-For` (0 por defecto: se ignora la cabecera). En Render, `1` (ya en `render.yaml`). |
 
 Autenticación: todos los endpoints con datos de usuario (`/api/v1/spaces/*`, `/api/v1/chat` y `/geometry/*`) exigen
@@ -113,6 +116,11 @@ responden 404, igual que los inexistentes. `/`, `/api/v1/health` y `/api/v1/auth
 | POST | `/api/v1/spaces/rooms/{id}/layout` | Distribuye el catálogo dentro del polígono real (sin IA) y guarda el resultado. |
 | POST | `/api/v1/spaces/rooms/{id}/analyze-photo` | Multipart (`file`, `confirm_replace`, `instrucciones`): la IA con visión estima la sala y hasta 10 objetos, que reemplazan la forma y los muebles de la sala. |
 | POST | `/api/v1/spaces/rooms/{id}/undo` | Sin cuerpo: deshace el último cambio de la sala (foto, chat, objetos, layout o vértices) → `{room, items, remaining, undone}`. 409 si no hay nada que deshacer. `/photo-undo` es un alias obsoleto. |
+| GET | `/api/v1/spaces/rooms/{id}/publication` | Del dueño: `{published, publication}`; `publication` = `{code, title, description, publishedAt, updatedAt, copies}` o `null`. |
+| PUT | `/api/v1/spaces/rooms/{id}/publication` | Publica (201) o actualiza (200) el proyecto en la red social: `{title, description?}`. 409 tope, 413, 422, 429. |
+| DELETE | `/api/v1/spaces/rooms/{id}/publication` | Deja de publicar: borra la publicación → 204. 404 si no estaba publicado. |
+| GET | `/api/v1/social/publications?page=N` | Catálogo público: `{items: [{code, title, description, publishedAt, updatedAt, copies, mine, room: {vertices, heightM, areaM2}, itemCount}], page, hasMore}`, 24 por página. |
+| POST | `/api/v1/social/publications/{code}/copy` | Copia una publicación pública como proyecto nuevo de la cuenta → 201 `{room, items}`, como importar. |
 | POST | `/api/v1/chat` | Chat sobre una sala: `{roomId, messages}` → `{role: "assistant", content, changes}`; puede añadir, quitar y mover objetos. |
 | POST | `/geometry/point-cloud` | Solo el filtro RANSAC sobre una nube de puntos. |
 | POST | `/geometry/collision` | Solo la validación de colisiones de una caja. |
@@ -308,6 +316,33 @@ lugar, `app/geometry/units.py`.
     `parts`, `estimated` y `rotation_deg` (solo 0) se validan y se ignoran: no hay columnas para ellos.
     El proyecto nuevo no tiene grupo, descripción ni historial de Deshacer, y no gasta cuota de IA.
 
+## Red social "Habita"
+
+Contrato: `CONTRATO-FASE9.md`. Tabla `publicaciones_proyecto` (migración 006 del repo database; el backend
+crea la tabla, sus índices y su RLS al arrancar en PostgreSQL, igual que con la 005). Código en
+`app/routers/social.py`, `app/schemas/social.py` y `app/services/project_publication.py`.
+
+- **Privado por defecto.** Un proyecto no aparece en la red hasta que su dueño lo publica; una fila con
+  `publica = false` (el valor por defecto de la columna) tampoco sale en el catálogo ni se puede copiar.
+- **Copia congelada.** Al publicar, el servidor arma desde la base el mismo documento que exporta el
+  frontend (`habita-project` v1) con el título como nombre y lo valida con la importación (`load_project`):
+  si la importación lo rechazaría, la publicación responde 422 con el mismo mensaje fijo; si pasaría de
+  256 KB, 413. Los cambios posteriores del proyecto no se ven en la red hasta volver a publicar (PUT), que
+  conserva el código, las copias y la fecha de publicación. La descripción privada del proyecto no se
+  publica: la publicación tiene su propia descripción (hasta 1000 caracteres).
+- **Despublicar borra la fila**: no queda guardada la copia congelada.
+- **Copiar** importa la copia congelada con el mismo código que `POST /rooms/import`
+  (`save_imported_project`): proyecto nuevo de quien copia, ids nuevos, sin grupo ni descripción, mismo
+  cupo que importar, y `copias = copias + 1` con un UPDATE atómico en la misma transacción. Se pueden
+  copiar las publicaciones propias.
+- **Lo público** se arma campo a campo: código público, título, descripción de la publicación, fechas,
+  copias, `mine` (si es de quien mira), planta, alto, área y número de objetos. Nunca correos, nombres de
+  usuario, ids de cuenta, de sala o de objeto, ni el id interno. El código público son 16 caracteres de
+  `secrets.token_urlsafe(12)` (aleatorio criptográfico, nunca `random`).
+- **RLS** activado sin políticas, como en el resto de tablas: la API REST de Supabase no ve ni las
+  publicaciones públicas; son públicas solo a través de este backend, y siempre con sesión.
+- Ningún endpoint de la red social gasta cuota de IA.
+
 ## Límites de peticiones
 
 Los contadores viven en memoria (`app/utils/rate_limit.py`, ventanas deslizantes, sin dependencias):
@@ -330,7 +365,12 @@ Superar un límite responde 429 con la cabecera `Retry-After` en segundos. CORS 
   ya registrado también cuenta. El límite global no depende de ninguna cabecera.
 - **Importaciones, por cuenta.** Como mucho 20 proyectos importados por hora (`IMPORTS_PER_HOUR`). Solo
   cuentan las importaciones guardadas: un archivo rechazado o un fallo de la base no gastan cupo. Dos
-  importaciones simultáneas pueden pasarse en una (aceptado).
+  importaciones simultáneas pueden pasarse en una (aceptado). Copiar una publicación de la red social
+  cuenta en este mismo cupo.
+- **Red social, por cuenta.** Como mucho 20 proyectos publicados a la vez (`MAX_PUBLICATIONS_PER_USER`,
+  409), 30 publicaciones, actualizaciones o retiradas por hora (`PUBLICATION_CHANGES_PER_HOUR`; solo
+  cuentan las guardadas) y 60 lecturas del catálogo por minuto (`SOCIAL_READS_PER_MINUTE`; cuenta cada
+  petición).
 
 **La IP detrás del proxy de Render.** `X-Forwarded-For` es una lista que empieza el cliente: puede enviar
 `X-Forwarded-For: 1.2.3.4` y cada proxy añade al final la IP que vio. Solo son fiables las entradas que
