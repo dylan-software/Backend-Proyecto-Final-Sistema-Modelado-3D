@@ -20,6 +20,7 @@ from app.routers import auth, chat, groups, rooms
 from app.routers.errors import DATABASE_ERRORS, DatabaseFailure, describe_database_error, new_request_id
 from app.routers.spaces import MAX_PHOTO_REQUEST_BYTES, PHOTO_UPLOAD_PATH, debug_router
 from app.routers.spaces import router as spaces_router
+from app.services.project_import import IMPORT_PATH, MAX_IMPORT_BYTES
 from app.utils.logging_config import configure_logging
 from app.utils.middlewares import (
     PROCESS_TIME_HEADER,
@@ -60,6 +61,8 @@ app.add_middleware(TrailingSlashMiddleware)
 # Photo uploads are refused before FastAPI parses them (and before authentication) when too large.
 # Inside CORSMiddleware, so the browser can read the 413.
 app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_PHOTO_REQUEST_BYTES, path_pattern=PHOTO_UPLOAD_PATH)
+# Los archivos de proyecto importados (máx. 256 KB), igual: antes de parsear y de autenticar.
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_IMPORT_BYTES, path_pattern=IMPORT_PATH)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,

@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     # Registrations per hour: in total, and per client IP (best effort, see app.utils.rate_limit).
     registrations_per_hour: int = Field(20, gt=0)
     registrations_per_ip_per_hour: int = Field(5, gt=0)
+    # Proyectos importados correctamente por cuenta y hora; POST /rooms/import responde 429 al llegar.
+    imports_per_hour: int = Field(20, gt=0)
     # Proxies in front of the server that append to X-Forwarded-For; 0 ignores the header. Render: 1.
     trusted_proxy_hops: int = Field(0, ge=0)
 

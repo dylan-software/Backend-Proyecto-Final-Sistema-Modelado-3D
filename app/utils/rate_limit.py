@@ -127,10 +127,38 @@ def registration_limiter():
     }
 
 
+IMPORT_LIMIT_REACHED = (
+    "Has importado demasiados proyectos en la última hora; espera un poco antes de volver a intentarlo."
+)
+
+
+@lru_cache
+def import_limiter():
+    """Proyectos importados correctamente (POST /rooms/import), por cuenta."""
+    return RateLimiter([(get_settings().imports_per_hour, HOUR)])
+
+
 def reset_all():
     """Olvida todos los contadores y vuelve a leer la configuración (pruebas)."""
-    for factory in (ai_limiter, login_failure_limiter, registration_limiter):
+    for factory in (ai_limiter, login_failure_limiter, registration_limiter, import_limiter):
         factory.cache_clear()
+
+
+def check_import_quota(user_id):
+    """Lanza 429 si la cuenta ya importó IMPORTS_PER_HOUR proyectos en la última hora.
+
+    Solo comprueba: la importación se cuenta con record_import cuando ya se guardó, así que un archivo
+    rechazado no gasta cupo. Dos importaciones simultáneas pueden pasarse en una (aceptado, como el
+    tope del catálogo).
+    """
+    wait = import_limiter().retry_after(user_id)
+    if wait:
+        raise too_many_requests(wait, IMPORT_LIMIT_REACHED)
+
+
+def record_import(user_id):
+    """Cuenta una importación correcta de la cuenta."""
+    import_limiter().record(user_id)
 
 
 def enforce_ai_quota(user_id, cost=1):
