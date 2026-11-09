@@ -138,10 +138,62 @@ def import_limiter():
     return RateLimiter([(get_settings().imports_per_hour, HOUR)])
 
 
+PUBLICATION_CHANGES_LIMIT_REACHED = (
+    "Has publicado o despublicado demasiadas veces en la última hora; espera un poco antes de volver a "
+    "intentarlo."
+)
+SOCIAL_READS_LIMIT_REACHED = (
+    "Has consultado la red social demasiadas veces seguidas; espera un poco antes de volver a intentarlo."
+)
+
+
+@lru_cache
+def publication_change_limiter():
+    """Publicaciones creadas, actualizadas o retiradas correctamente, por cuenta."""
+    return RateLimiter([(get_settings().publication_changes_per_hour, HOUR)])
+
+
+@lru_cache
+def social_read_limiter():
+    """Lecturas del catálogo de la red social, por cuenta."""
+    return RateLimiter([(get_settings().social_reads_per_minute, MINUTE)])
+
+
 def reset_all():
     """Olvida todos los contadores y vuelve a leer la configuración (pruebas)."""
-    for factory in (ai_limiter, login_failure_limiter, registration_limiter, import_limiter):
+    for factory in (
+        ai_limiter,
+        login_failure_limiter,
+        registration_limiter,
+        import_limiter,
+        publication_change_limiter,
+        social_read_limiter,
+    ):
         factory.cache_clear()
+
+
+def check_publication_change_quota(user_id):
+    """Lanza 429 si la cuenta ya hizo PUBLICATION_CHANGES_PER_HOUR cambios de publicación en la última hora.
+
+    Solo comprueba; record_publication_change cuenta el cambio cuando ya se guardó (como importar).
+    """
+    wait = publication_change_limiter().retry_after(user_id)
+    if wait:
+        raise too_many_requests(wait, PUBLICATION_CHANGES_LIMIT_REACHED)
+
+
+def record_publication_change(user_id):
+    """Cuenta un cambio de publicación correcto de la cuenta."""
+    publication_change_limiter().record(user_id)
+
+
+def enforce_social_read(user_id):
+    """Cuenta una lectura del catálogo, o lanza 429 si la cuenta ya hizo SOCIAL_READS_PER_MINUTE."""
+    limiter = social_read_limiter()
+    wait = limiter.retry_after(user_id)
+    if wait:
+        raise too_many_requests(wait, SOCIAL_READS_LIMIT_REACHED)
+    limiter.record(user_id)
 
 
 def check_import_quota(user_id):
