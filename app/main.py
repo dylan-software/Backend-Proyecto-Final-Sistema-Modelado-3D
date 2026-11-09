@@ -17,7 +17,7 @@ from app.database.connection import (
 )
 from app.geometry.router import router as geometry_router
 from app.models.space import Base
-from app.routers import auth, chat, groups, rooms
+from app.routers import auth, chat, groups, rooms, social
 from app.routers.errors import DATABASE_ERRORS, DatabaseFailure, describe_database_error, new_request_id
 from app.routers.spaces import MAX_PHOTO_REQUEST_BYTES, PHOTO_UPLOAD_PATH, debug_router
 from app.routers.spaces import router as spaces_router
@@ -141,6 +141,7 @@ app.include_router(geometry_router)
 app.include_router(spaces_router)
 app.include_router(rooms.router)
 app.include_router(groups.router)
+app.include_router(social.router)
 app.include_router(chat.router)
 if get_settings().enable_debug_routes:
     app.include_router(debug_router)
