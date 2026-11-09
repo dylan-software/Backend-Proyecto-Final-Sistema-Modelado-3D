@@ -104,7 +104,7 @@ responden 404, igual que los inexistentes. `/`, `/api/v1/health` y `/api/v1/auth
 | POST | `/api/v1/spaces/groups` | Crea un grupo: `{name, description?}` → 201. 409 al llegar a `MAX_GROUPS_PER_USER`. |
 | PATCH | `/api/v1/spaces/groups/{id}` | Cambia `name` o `description` (al menos uno; `description` `null` o `""` la borra). |
 | PATCH | `/api/v1/spaces/rooms/{id}/vertices/{index}` | Mueve un vértice: `{x, y}`. 422 si el polígono queda inválido (la sala no cambia). |
-| POST | `/api/v1/spaces/rooms/{id}/vertices` | Inserta un vértice: `{afterIndex, x, y}`. |
+| POST | `/api/v1/spaces/rooms/{id}/vertices` | Inserta un vértice: `{afterIndex, x, y}`. 422 si la sala ya tiene 200 (el tope de crearla). |
 | DELETE | `/api/v1/spaces/rooms/{id}/vertices/{index}` | Elimina un vértice; una sala conserva al menos 3. |
 | GET | `/api/v1/spaces/rooms/{id}/items` | Muebles colocados: `{items: [{id, name, x, y, rotation, widthM, depthM, heightM, elevationM}]}`. |
 | POST | `/api/v1/spaces/rooms/{id}/items` | Añade un objeto: `{name, kind, wall?, widthCm, depthCm, heightCm, elevationCm?}`; el servidor lo coloca → 201 `{item, wall, adjusted}`. |
@@ -295,11 +295,12 @@ lugar, `app/geometry/units.py`.
     autenticar, con o sin `Content-Length`), 401, 415 si no es `application/json`, 429, y 422 si no es
     UTF-8 o JSON (también NaN, claves repetidas o anidamiento excesivo), si `format` o `version` no son
     los conocidos, si no cumple el esquema estricto (`app/schemas/project_file.py`: campos de más
-    rechazados, sin conversiones de tipo, máx. 60 vértices, 200 objetos y 8 partes, nombres en texto
+    rechazados, sin conversiones de tipo, máx. 200 vértices, 200 objetos y 8 partes, nombres en texto
     plano) o si la geometría falla (polígono, objeto de suelo levantado, objeto fuera de la sala o por
     encima del techo, con 1 cm de tolerancia). Los solapes no se comprueban (hay apilados legítimos).
-  - La sala admite los mismos límites que `POST /rooms` (coordenadas de ±1000 m, alto hasta 20 m), así
-    que todo proyecto exportado se puede reimportar salvo que tenga más de 60 vértices.
+  - La sala admite los mismos límites que `POST /rooms` (coordenadas de ±1000 m, alto hasta 20 m y hasta
+    200 vértices, el mismo tope que `POST /rooms/{id}/vertices`), así que todo proyecto exportado se
+    puede reimportar.
   - El 422 lleva un `detail` fijo en español (`app/services/project_import.py`) que solo nombra
     posiciones ("objeto 3") y campos del esquema: nunca un valor recibido ni un campo desconocido. Por eso
     la ruta lee el cuerpo crudo en vez de usar un modelo de FastAPI.

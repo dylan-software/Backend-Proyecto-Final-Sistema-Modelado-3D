@@ -11,10 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.main import app
 from app.models.space import Habitacion, MuebleSugerido
+from app.schemas.room import MAX_VERTICES
 from app.services.project_import import MAX_IMPORT_BYTES, NOT_JSON, WRONG_VERSION
 from app.services.room_undo import RoomUndoStore, get_room_undo_store
 from app.tests.test_project_import import MARKER, VALID
-from app.tests.test_rooms_api import ROOMS, created_id
+from app.tests.test_rooms_api import ROOMS, circle, created_id
 from app.utils import rate_limit
 
 pytestmark = pytest.mark.anyio
@@ -145,6 +146,28 @@ async def test_round_trip_keeps_sizes_positions_and_heights_with_new_ids(user_a,
         for key in keys:
             assert copied[key] == pytest.approx(original[key], abs=1e-6), key
     assert not {item["id"] for item in items} & {item["id"] for item in imported["items"]}
+
+
+async def test_round_trip_of_a_room_with_more_than_60_vertices(user_a, db_sessions, undo_store):
+    # Antes el archivo tenía un tope de 60 vértices: una sala así se exportaba pero no se reimportaba.
+    # Ahora el tope es el de POST /rooms (y el de insertar vértices), así que la sala más grande vuelve.
+    room_id = await created_id(user_a, vertices=circle(MAX_VERTICES, radius=3), height_m=2.5, name="Redonda")
+    assert (await user_a.post(f"{ROOMS}/{room_id}/items", json=TABLE)).status_code == 201
+    room = (await user_a.get(f"{ROOMS}/{room_id}")).json()
+    items = (await user_a.get(f"{ROOMS}/{room_id}/items")).json()["items"]
+    assert len(room["vertices"]) == MAX_VERTICES > 60
+
+    response = await send(user_a, export_file(room, items))
+
+    assert response.status_code == 201, response.text
+    imported = response.json()
+    assert imported["room"]["id"] != room_id
+    assert imported["room"]["vertices"] == room["vertices"]
+    assert imported["room"]["areaM2"] == room["areaM2"]
+    keys = ("x", "y", "widthM", "depthM", "heightM", "elevationM")
+    (copied,) = imported["items"]
+    for key in keys:
+        assert copied[key] == pytest.approx(items[0][key], abs=1e-6), key
 
 
 async def test_import_does_not_spend_ai_quota_and_has_nothing_to_undo(user_a, db_sessions, undo_store):
