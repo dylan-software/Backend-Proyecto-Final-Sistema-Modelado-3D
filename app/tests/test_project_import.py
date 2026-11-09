@@ -7,6 +7,7 @@ import math
 
 import pytest
 
+from app.schemas.room import MAX_VERTICES
 from app.services.project_import import (
     INVALID_POLYGON,
     ITEM_COUNT,
@@ -118,7 +119,7 @@ def test_no_items_and_utf8_bom_are_fine():
 def test_limits_are_inclusive():
     many_parts = item(PICTURE, parts=[PART] * 8)
     small = item(size_cm=[5, 5, 5], position={"x_m": 3, "z_m": 1, "elevation_m": 0, "rotation_deg": 0})
-    big_room = {"height_m": 20, "vertices": circle(60, radius=20), "estimated": True}
+    big_room = {"height_m": 20, "vertices": circle(MAX_VERTICES, radius=20), "estimated": True}
     furniture = [item(small, name=f"Caja {n}") for n in range(200)]
 
     assert len(load_project(raw(project(items=[many_parts]))).pieces) == 1
@@ -248,8 +249,8 @@ def test_missing_fields_are_rejected(path, field, place):
 # --- Topes de las listas ------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("count", [2, 61])
-def test_vertex_count_is_3_to_60(count):
+@pytest.mark.parametrize("count", [2, MAX_VERTICES + 1])
+def test_vertex_count_is_3_to_the_limit_of_post_rooms(count):
     room = {"height_m": 2.5, "vertices": circle(count), "estimated": False}
 
     assert rejected(project(room=room, items=[])) == VERTEX_COUNT

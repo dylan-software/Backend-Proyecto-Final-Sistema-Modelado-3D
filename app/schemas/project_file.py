@@ -11,13 +11,14 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.photo import OBJECT_MAX_SIDE_CM, OBJECT_MIN_SIDE_CM, clean_plain_text
-from app.schemas.room import MAX_COORDINATE_M, MAX_HEIGHT_M, WallSide
+from app.schemas.room import MAX_COORDINATE_M, MAX_HEIGHT_M, MAX_VERTICES, WallSide
 from app.schemas.text import MAX_PROJECT_NAME_LENGTH, plain_name
 
 PROJECT_FILE_FORMAT = "habita-project"
 PROJECT_FILE_VERSION = 1
-# Topes del archivo (PLAN-COMPLETO.md, FASE 6).
-MAX_FILE_VERTICES = 60
+# Topes del archivo (PLAN-COMPLETO.md, FASE 6). Los vértices, el mismo tope que crear y editar una sala
+# (POST /rooms y POST /rooms/{id}/vertices): así todo proyecto exportado se puede volver a importar.
+MAX_FILE_VERTICES = MAX_VERTICES
 MAX_FILE_ITEMS = 200
 MAX_FILE_PARTS = 8
 # Medidas de una parte (solo se validan: no hay columna donde guardarlas).
@@ -77,7 +78,7 @@ class FileItem(FileModel):
 
 
 class FileRoom(FileModel):
-    """Mismos límites que POST /rooms (decisión del usuario), con el tope de 60 vértices del archivo."""
+    """Mismos límites que POST /rooms (decisión del usuario), también el máximo de vértices."""
 
     height_m: float = Field(gt=0, le=MAX_HEIGHT_M)
     vertices: list[Annotated[list[Coordinate], Field(min_length=2, max_length=2)]] = Field(
