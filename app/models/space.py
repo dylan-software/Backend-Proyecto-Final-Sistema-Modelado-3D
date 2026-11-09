@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     Float,
@@ -10,7 +11,10 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
+    false,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -99,6 +103,68 @@ class MuebleSugerido(Base):
     posicion_z: Mapped[float] = mapped_column(Float)
 
     habitacion: Mapped["Habitacion"] = relationship(back_populates="muebles")
+
+
+# Máximo de caracteres del documento congelado de una publicación (como texto), igual que la migración 006.
+MAX_PUBLICATION_DOCUMENT_CHARS = 262144
+
+
+class ProjectPublication(Base):
+    """Proyecto publicado en la red social (migración 006).
+
+    Privado por defecto: un proyecto no tiene fila hasta que su dueño lo publica, y una fila sin
+    `public` explícito queda en False (el catálogo solo lee las públicas). `document` es la copia
+    congelada del proyecto en el formato del archivo exportado ("habita-project" v1), sin datos
+    personales. `user_id`, `room_id` e `id` nunca salen en la API: el único id público es `code`.
+    """
+
+    __tablename__ = "publicaciones_proyecto"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column("codigo", String(24))
+    user_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Borrar el proyecto borra su publicación (en PostgreSQL; SQLite sin PRAGMA no aplica la FK).
+    room_id: Mapped[int] = mapped_column("habitacion_id", ForeignKey("habitaciones.id", ondelete="CASCADE"))
+    public: Mapped[bool] = mapped_column("publica", Boolean, default=False, server_default=false())
+    title: Mapped[str] = mapped_column("titulo", String(120))
+    description: Mapped[str | None] = mapped_column("descripcion", Text, nullable=True)
+    document: Mapped[dict] = mapped_column("documento", JSON().with_variant(JSONB(), "postgresql"))
+    copies: Mapped[int] = mapped_column("copias", Integer, default=0, server_default=text("0"))
+    created_at: Mapped[datetime] = mapped_column(
+        "creada_en",
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        "actualizada_en",
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+    # Mismos nombres que la migración 006. length() en vez de char_length() por SQLite, como en la 005.
+    __table_args__ = (
+        UniqueConstraint("codigo", name="uq_publicaciones_proyecto_codigo"),
+        UniqueConstraint("habitacion_id", name="uq_publicaciones_proyecto_habitacion_id"),
+        CheckConstraint(
+            f"length(descripcion) <= {MAX_DESCRIPTION_LENGTH}",
+            name="ck_publicaciones_proyecto_descripcion_len",
+        ),
+        CheckConstraint(
+            f"length(CAST(documento AS TEXT)) <= {MAX_PUBLICATION_DOCUMENT_CHARS}",
+            name="ck_publicaciones_proyecto_documento_len",
+        ),
+        CheckConstraint("copias >= 0", name="ck_publicaciones_proyecto_copias"),
+    )
+
+
+# El catálogo lista las públicas de la más nueva a la más vieja (índice parcial en PostgreSQL).
+Index(
+    "ix_publicaciones_proyecto_catalogo",
+    ProjectPublication.id.desc(),
+    postgresql_where=ProjectPublication.public,
+)
 
 
 class Categoria(Base):

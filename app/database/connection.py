@@ -113,3 +113,23 @@ async def add_project_group_columns(conn):
         return
     for statement in PROJECT_GROUP_STATEMENTS:
         await conn.execute(text(statement))
+
+
+# Migración 006 (publicaciones de la red social), con el mismo SQL que el repo database. create_all ya
+# crea la tabla con sus UNIQUE, sus CHECK y sus índices; esto los repite (no-op) y activa el RLS.
+PROJECT_PUBLICATION_STATEMENTS = (
+    "CREATE INDEX IF NOT EXISTS ix_publicaciones_proyecto_user_id ON publicaciones_proyecto (user_id)",
+    "CREATE INDEX IF NOT EXISTS ix_publicaciones_proyecto_catalogo ON publicaciones_proyecto (id DESC) "
+    "WHERE publica",
+    # Igual que grupos_proyecto: RLS sin políticas cierra la API REST de Supabase (anon y authenticated
+    # no ven ni las publicaciones públicas); el backend es dueño de la tabla y se salta el RLS.
+    "ALTER TABLE publicaciones_proyecto ENABLE ROW LEVEL SECURITY",
+)
+
+
+async def add_project_publication_statements(conn):
+    """Índices y RLS de publicaciones_proyecto (migración 006). Solo PostgreSQL; no-op si ya estaban."""
+    if conn.dialect.name != "postgresql":
+        return
+    for statement in PROJECT_PUBLICATION_STATEMENTS:
+        await conn.execute(text(statement))

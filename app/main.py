@@ -12,6 +12,7 @@ from app.database.connection import (
     add_missing_room_columns,
     add_missing_user_columns,
     add_project_group_columns,
+    add_project_publication_statements,
     engine,
 )
 from app.geometry.router import router as geometry_router
@@ -44,6 +45,7 @@ async def lifespan(app):
             await add_missing_user_columns(conn)
             await add_missing_room_columns(conn)
             await add_project_group_columns(conn)
+            await add_project_publication_statements(conn)
     except DATABASE_ERRORS as exc:
         # Keep serving the endpoints that do not need the database.
         # Clase y mensaje limpios: el texto completo puede llevar SQL, parámetros o la URL.
