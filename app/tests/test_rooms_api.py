@@ -1,7 +1,10 @@
+import math
+
 import pytest
 from sqlalchemy import select
 
 from app.models.space import Habitacion
+from app.schemas.room import MAX_VERTICES
 from app.tests.test_room import L_SHAPE, NOTCHED_ROOM
 
 pytestmark = pytest.mark.anyio
@@ -204,6 +207,44 @@ async def test_insert_that_breaks_the_polygon_is_422(user_a, db_sessions):
     response = await user_a.post(f"{ROOMS}/{room_id}/vertices", json={"afterIndex": 0, "x": 2, "y": 4})
 
     assert response.status_code == 422
+
+
+def circle(count, radius=5.0):
+    """Polígono regular de count vértices (convexo: insertar sobre el círculo nunca lo cruza)."""
+    return [
+        (radius * math.cos(2 * math.pi * k / count), radius * math.sin(2 * math.pi * k / count))
+        for k in range(count)
+    ]
+
+
+def point_between_first_two(count, radius=5.0):
+    angle = math.pi / count
+    return {"x": radius * math.cos(angle), "y": radius * math.sin(angle)}
+
+
+async def test_insert_can_reach_the_vertex_limit_of_create(user_a, db_sessions):
+    room_id = await created_id(user_a, vertices=circle(MAX_VERTICES - 1))
+
+    response = await user_a.post(
+        f"{ROOMS}/{room_id}/vertices", json={"afterIndex": 0, **point_between_first_two(MAX_VERTICES - 1)}
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(response.json()["vertices"]) == MAX_VERTICES
+
+
+async def test_insert_beyond_the_vertex_limit_of_create_is_422_and_nothing_changes(user_a, db_sessions):
+    room_id = await created_id(user_a, vertices=circle(MAX_VERTICES))
+
+    response = await user_a.post(
+        f"{ROOMS}/{room_id}/vertices", json={"afterIndex": 0, **point_between_first_two(MAX_VERTICES)}
+    )
+
+    assert response.status_code == 422, response.text
+    assert f"at most {MAX_VERTICES} vertices" in response.json()["detail"]
+    async with db_sessions() as session:
+        row = await session.get(Habitacion, room_id)
+    assert len(row.vertices) == MAX_VERTICES
 
 
 async def test_remove_a_vertex(user_a, db_sessions):
