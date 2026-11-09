@@ -207,12 +207,24 @@ async def import_room(
         plan = load_project(await request.body())
     except ProjectImportError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.message) from None
+    return await save_imported_project(session, current_user, plan)
 
-    row = Habitacion(user_id=current_user, nombre=plan.name, **plan.room)
+
+async def save_imported_project(session, user_id, plan):
+    """Guarda un plan de importación como proyecto NUEVO de user_id y devuelve {room, items}.
+
+    Ids nuevos, sin grupo ni descripción. Lo usan importar un archivo y copiar una publicación (la copia
+    deja antes en la sesión la suma de su contador, para que vaya en la misma transacción). La
+    importación solo cuenta en el cupo si el commit sale bien.
+
+    Raises:
+        HTTPException: 503/500 fallo de base de datos (nada queda guardado).
+    """
+    row = Habitacion(user_id=user_id, nombre=plan.name, **plan.room)
     row.muebles = [MuebleSugerido(**piece) for piece in plan.pieces]
     session.add(row)
     await _commit(session)
-    record_import(current_user)
+    record_import(user_id)
     return RoomImportResponse(
         room=room_detail(row),
         items=[room_item(piece) for piece in sorted(row.muebles, key=lambda piece: piece.id)],
