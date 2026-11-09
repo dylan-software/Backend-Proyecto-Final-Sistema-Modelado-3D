@@ -7,7 +7,7 @@ answers 404, exactly like one that does not exist, so ids of other accounts cann
 import asyncio
 from dataclasses import asdict
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -29,6 +29,7 @@ from app.schemas.room import (
     PlacedItemResponse,
     RoomCreate,
     RoomDetail,
+    RoomImportResponse,
     RoomItem,
     RoomItemsOut,
     RoomUndoResponse,
@@ -36,6 +37,7 @@ from app.schemas.room import (
     Vertex,
     VertexInsert,
 )
+from app.services.project_import import ProjectImportError, load_project
 from app.services.room_objects import RoomObjectError, delete_object, place_object, update_object
 from app.services.room_undo import (
     NOTHING_TO_UNDO,
@@ -44,6 +46,10 @@ from app.services.room_undo import (
     restore_room,
     snapshot_room,
 )
+from app.utils.rate_limit import check_import_quota, record_import
+
+# Mensaje del 415 de POST /rooms/import.
+IMPORT_NOT_JSON_TYPE = "El archivo debe enviarse como JSON."
 
 router = APIRouter(prefix="/api/v1/spaces/rooms", tags=["rooms"])
 
@@ -169,6 +175,47 @@ async def create_room(
     session.add(row)
     await _commit(session)
     return room_detail(row)
+
+
+@router.post("/import", response_model=RoomImportResponse, status_code=status.HTTP_201_CREATED)
+async def import_room(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    current_user: str = Depends(get_current_user),
+):
+    """Crea un proyecto NUEVO de la cuenta a partir de un archivo exportado (CONTRATO-FASE6.md).
+
+    El cuerpo es el archivo tal cual (application/json, máx. 256 KB: lo corta BodySizeLimitMiddleware
+    antes de autenticar). Se lee crudo y lo valida app.services.project_import, no el modelo de cuerpo de
+    FastAPI, cuyo 422 nombraría en loc los campos desconocidos (eco de la entrada). Ids nuevos, sin grupo
+    ni descripción; no llama a la IA.
+
+    Returns:
+        201 con {room, items}.
+
+    Raises:
+        HTTPException: 401 sin sesión válida, 413 más de 256 KB, 415 no es application/json, 429 ya
+            importó IMPORTS_PER_HOUR proyectos en la última hora, 422 archivo inválido (detail fijo en
+            español, sin eco), 503/500 fallo de base de datos.
+    """
+    media_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if media_type != "application/json":
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, IMPORT_NOT_JSON_TYPE)
+    check_import_quota(current_user)
+    try:
+        plan = load_project(await request.body())
+    except ProjectImportError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.message) from None
+
+    row = Habitacion(user_id=current_user, nombre=plan.name, **plan.room)
+    row.muebles = [MuebleSugerido(**piece) for piece in plan.pieces]
+    session.add(row)
+    await _commit(session)
+    record_import(current_user)
+    return RoomImportResponse(
+        room=room_detail(row),
+        items=[room_item(piece) for piece in sorted(row.muebles, key=lambda piece: piece.id)],
+    )
 
 
 @router.patch("/{room_id}", response_model=RoomDetail)

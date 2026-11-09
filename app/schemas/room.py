@@ -281,6 +281,16 @@ class AnalyzePhotoResponse(CamelModel):
     discarded: list[DiscardedItem]
 
 
+class RoomImportResponse(CamelModel):
+    """Resultado 201 de POST /rooms/import: el proyecto nuevo y sus objetos, con ids nuevos.
+
+    Mismas formas que POST /rooms/{id}/undo. Contrato: CONTRATO-FASE6.md, sección 3.
+    """
+
+    room: RoomDetail
+    items: list[RoomItem]
+
+
 UndoneChange = Literal["photo", "chat", "add", "update", "delete", "layout", "vertices"]
 
 
