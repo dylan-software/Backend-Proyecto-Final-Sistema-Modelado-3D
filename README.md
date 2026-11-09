@@ -41,7 +41,7 @@ app/
 ├── services/room_undo.py        la pila de Deshacer de cada sala
 ├── utils/                  tipos compartidos, ayudas de imagen, logs (logging_config) y middlewares
 ├── routers/spaces.py       POST /analyze, catálogo, listado y POST /rooms/{id}/analyze-photo
-├── routers/rooms.py        salas poligonales editables, sus muebles, el layout y POST /rooms/{id}/undo
+├── routers/rooms.py        salas poligonales editables, sus muebles, el layout, POST /rooms/{id}/undo y /rooms/import
 ├── routers/chat.py         POST /api/v1/chat
 └── tests/                  pruebas unitarias y de integración
 ```
@@ -81,6 +81,7 @@ de esta carpeta.
 | `AI_REQUESTS_PER_MINUTE`, `AI_REQUESTS_PER_DAY` | Llamadas a la IA por cuenta (10 por minuto y 200 por día por defecto), sumando chat, catálogo, `/analyze` y `analyze-photo` (cada foto cuenta como 3). Más allá, 429 con `Retry-After`. |
 | `LOGIN_FAILURES_PER_EMAIL`, `LOGIN_FAILURE_WINDOW_MINUTES` | Intentos fallidos de login por email (10 en 15 minutos por defecto). Más allá, 429 con `Retry-After`. |
 | `REGISTRATIONS_PER_HOUR`, `REGISTRATIONS_PER_IP_PER_HOUR` | Registros por hora en total (20) y por IP de cliente (5, de mejor esfuerzo). Más allá, 429 con `Retry-After`. |
+| `IMPORTS_PER_HOUR` | Proyectos importados correctamente por cuenta y hora (20 por defecto). Más allá, `POST /rooms/import` responde 429 con `Retry-After`. |
 | `TRUSTED_PROXY_HOPS` | Proxies propios delante del servidor que añaden entradas a `X-Forwarded-For` (0 por defecto: se ignora la cabecera). En Render, `1` (ya en `render.yaml`). |
 
 Autenticación: todos los endpoints con datos de usuario (`/api/v1/spaces/*`, `/api/v1/chat` y `/geometry/*`) exigen
@@ -96,6 +97,7 @@ responden 404, igual que los inexistentes. `/`, `/api/v1/health` y `/api/v1/auth
 | GET | `/` | Estado del servidor. |
 | POST | `/api/v1/spaces/analyze` | Pipeline completo: RANSAC → OmniRoute → colisiones → PostgreSQL. |
 | POST | `/api/v1/spaces/rooms` | Crea una sala poligonal: `{name, vertices: [{x, y}], heightM, groupId?, description?}` → 201 `{id, name, vertices, heightM, areaM2}` (más `groupId` y `description` si tienen valor). 404 si `groupId` es de otra cuenta. |
+| POST | `/api/v1/spaces/rooms/import` | Cuerpo = archivo `habita-project` (JSON, máx. 256 KB) → 201 `{room, items}`: proyecto nuevo de la cuenta con ids nuevos y sin grupo. 413, 415, 422 (mensaje fijo, sin eco) y 429. |
 | GET | `/api/v1/spaces/rooms/{id}` | La sala; las creadas por `/analyze` vuelven como su rectángulo. |
 | PATCH | `/api/v1/spaces/rooms/{id}` | Renombra, describe o mueve de grupo un proyecto: `{name?, description?, groupId?}` (al menos uno; `groupId: null` lo deja sin grupo; `description` `null` o `""` la borra). No toca forma, altura ni muebles. |
 | GET | `/api/v1/spaces/groups` | Grupos de la cuenta, del más antiguo al más nuevo: `{groups: [{id, name, description, createdAt, projectCount}]}`. |
@@ -283,6 +285,27 @@ lugar, `app/geometry/units.py`.
   - El prompt pide español sencillo, de 2 a 4 frases y sin coordenadas, fórmulas ni Markdown. Los datos
     de la sala (`<datos_sala>`) ya no llevan coordenadas: medidas, si es rectangular y cada objeto con su
     `id`, su nombre, su ubicación en palabras y sus medidas en cm.
+- **Importar un proyecto.** `POST /api/v1/spaces/rooms/import`. Contrato completo en `CONTRATO-FASE6.md`.
+  El frontend exporta en el navegador (sin ruta) y sube el archivo tal cual con
+  `Content-Type: application/json`. Formato (versión 1, claves en snake_case):
+  `{format: "habita-project", version: 1, name, room: {height_m, vertices: [[x, y]], estimated},
+  items: [{name, category, kind, size_cm: [ancho, alto, fondo], position: {x_m, z_m, elevation_m,
+  rotation_deg}, wall, parts}]}`; `x_m`/`z_m` son el CENTRO de la huella.
+  - El archivo NO es confiable. Orden: 413 si pasa de 256 KB (`BodySizeLimitMiddleware`, antes de
+    autenticar, con o sin `Content-Length`), 401, 415 si no es `application/json`, 429, y 422 si no es
+    UTF-8 o JSON (también NaN, claves repetidas o anidamiento excesivo), si `format` o `version` no son
+    los conocidos, si no cumple el esquema estricto (`app/schemas/project_file.py`: campos de más
+    rechazados, sin conversiones de tipo, máx. 60 vértices, 200 objetos y 8 partes, nombres en texto
+    plano) o si la geometría falla (polígono, objeto de suelo levantado, objeto fuera de la sala o por
+    encima del techo, con 1 cm de tolerancia). Los solapes no se comprueban (hay apilados legítimos).
+  - La sala admite los mismos límites que `POST /rooms` (coordenadas de ±1000 m, alto hasta 20 m), así
+    que todo proyecto exportado se puede reimportar salvo que tenga más de 60 vértices.
+  - El 422 lleva un `detail` fijo en español (`app/services/project_import.py`) que solo nombra
+    posiciones ("objeto 3") y campos del esquema: nunca un valor recibido ni un campo desconocido. Por eso
+    la ruta lee el cuerpo crudo en vez de usar un modelo de FastAPI.
+  - Se guardan nombre, polígono, alto y, por objeto, nombre, medidas, centro y base. `category`, `wall`,
+    `parts`, `estimated` y `rotation_deg` (solo 0) se validan y se ignoran: no hay columnas para ellos.
+    El proyecto nuevo no tiene grupo, descripción ni historial de Deshacer, y no gasta cuota de IA.
 
 ## Límites de peticiones
 
@@ -304,6 +327,9 @@ Superar un límite responde 429 con la cabecera `Retry-After` en segundos. CORS 
   esa ventana fallando a propósito; el dueño vuelve a entrar cuando termina.
 - **Registro.** Como mucho 20 intentos por hora en total y 5 por IP de cliente; un intento con un email
   ya registrado también cuenta. El límite global no depende de ninguna cabecera.
+- **Importaciones, por cuenta.** Como mucho 20 proyectos importados por hora (`IMPORTS_PER_HOUR`). Solo
+  cuentan las importaciones guardadas: un archivo rechazado o un fallo de la base no gastan cupo. Dos
+  importaciones simultáneas pueden pasarse en una (aceptado).
 
 **La IP detrás del proxy de Render.** `X-Forwarded-For` es una lista que empieza el cliente: puede enviar
 `X-Forwarded-For: 1.2.3.4` y cada proxy añade al final la IP que vio. Solo son fiables las entradas que
