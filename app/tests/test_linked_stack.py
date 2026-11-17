@@ -94,6 +94,20 @@ def test_lifo_order():
     assert stack.is_empty()
 
 
+def test_top_is_an_alias_of_peek():
+    stack = LinkedStack()
+    with pytest.raises(IndexError):
+        stack.top()
+    for value in "abc":
+        stack.push(value)
+
+    assert stack.top() == stack.peek() == "c"
+    assert len(stack) == 3  # top no desapila
+    stack.pop()
+    assert stack.top() == "b"
+    stack.check_invariants()
+
+
 def test_a_single_element():
     stack = LinkedStack()
     stack.push({"vertices": []})

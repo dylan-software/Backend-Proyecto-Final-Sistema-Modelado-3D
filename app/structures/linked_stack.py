@@ -21,8 +21,12 @@ class StackNode(Generic[T]):
 class LinkedStack(Generic[T]):
     """Pila LIFO: se apila y se desapila por la cima.
 
+    Está construida como una lista simplemente enlazada: cada StackNode guarda el dato (value) y una sola
+    referencia al siguiente nodo (below, el de debajo). La cima es la cabeza de esa lista, así que apilar
+    y desapilar solo tocan el primer nodo.
+
     Costes (n = elementos):
-        push, pop, peek, len, is_empty, is_full: O(1).
+        push, pop, peek, top (alias de peek), len, is_empty, is_full: O(1).
         Recorrer (iter, de la cima al fondo), clear: O(n). check_invariants: O(n).
     Memoria: O(n), un nodo por elemento.
 
@@ -84,6 +88,14 @@ class LinkedStack(Generic[T]):
         if self._top is None:
             raise IndexError("peek de una pila vacía")
         return self._top.value
+
+    def top(self) -> T:
+        """La cima, sin desapilarla: el nombre del curso para peek. O(1).
+
+        Raises:
+            IndexError: la pila está vacía.
+        """
+        return self.peek()
 
     def clear(self) -> None:
         """Vacía la pila. O(n): desengancha cada nodo."""
