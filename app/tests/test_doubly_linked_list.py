@@ -106,6 +106,162 @@ def test_push_and_pop_at_both_ends_match_deque(seed):
         assert list(linked) == list(reference)
 
 
+def run_random_positions(rng, capacity=None):
+    """Inserta y quita en cualquier posición (por índice y por nodo) frente a una list."""
+    linked, reference = DoublyLinkedList(capacity), []
+    for step in range(OPERATIONS):
+        action = rng.random()
+        full = capacity is not None and len(reference) == capacity
+        if action < 0.3:
+            index = rng.randint(0, len(reference))
+            if full:
+                with pytest.raises(CapacityError):
+                    linked.insert(index, step)
+            else:
+                assert linked.insert(index, step).value == step
+                reference.insert(index, step)
+        elif action < 0.45 and reference:
+            index = rng.randrange(len(reference))
+            if full:
+                with pytest.raises(CapacityError):
+                    linked.insert_after(linked.node_at(index), step)
+            else:
+                assert linked.insert_after(linked.node_at(index), step).value == step
+                reference.insert(index + 1, step)
+        elif action < 0.6 and reference:
+            index = rng.randrange(len(reference))
+            if full:
+                with pytest.raises(CapacityError):
+                    linked.insert_before(linked.node_at(index), step)
+            else:
+                assert linked.insert_before(linked.node_at(index), step).value == step
+                reference.insert(index, step)
+        elif action < 0.9:
+            if reference:
+                index = rng.randrange(len(reference))
+                assert linked.remove_at(index) == reference.pop(index)
+            else:
+                with pytest.raises(IndexError):
+                    linked.remove_at(0)
+        elif reference:
+            index = rng.randrange(len(reference))
+            assert linked.node_at(index).value == reference[index]
+        assert_same(linked, [(v, v) for v in reference])
+        if reference:
+            assert (linked.head.value, linked.tail.value) == (reference[0], reference[-1])
+
+
+@pytest.mark.parametrize("seed", [30, 31, 32, 33])
+def test_inserting_and_removing_at_any_position_match_a_list(seed):
+    run_random_positions(random.Random(seed))
+
+
+@pytest.mark.parametrize("seed", [40, 41])
+def test_inserting_at_any_position_with_a_capacity(seed):
+    rng = random.Random(seed)
+    run_random_positions(rng, capacity=rng.randint(1, 8))
+
+
+def test_insert_at_the_ends_and_in_the_middle():
+    linked = DoublyLinkedList()
+    linked.insert(0, "b")  # lista vacía: el 0 es el final
+    linked.insert(0, "a")  # nueva cabeza
+    linked.insert(2, "d")  # índice size: nueva cola
+    c = linked.insert(2, "c")
+
+    assert list(linked) == ["a", "b", "c", "d"]
+    assert (linked.head.value, linked.tail.value) == ("a", "d")
+    assert (c.prev.value, c.next.value) == ("b", "d")
+    assert [linked.node_at(i).value for i in range(4)] == ["a", "b", "c", "d"]
+    linked.check_invariants()
+
+
+def test_insert_after_and_before_update_head_and_tail():
+    linked = DoublyLinkedList()
+    middle = linked.push_back("m")
+    last = linked.insert_after(middle, "z")
+    first = linked.insert_before(middle, "a")
+
+    assert (linked.head, linked.tail) == (first, last)
+    linked.insert_after(first, "b")
+    linked.insert_before(last, "y")
+    assert list(linked) == ["a", "b", "m", "y", "z"]
+    assert list(reversed(linked)) == ["z", "y", "m", "b", "a"]
+    linked.check_invariants()
+
+
+def test_remove_at_the_head_the_middle_and_the_tail():
+    linked = DoublyLinkedList()
+    for value in "abcde":
+        linked.push_back(value)
+
+    assert linked.remove_at(0) == "a"
+    assert linked.remove_at(3) == "e"
+    assert linked.remove_at(1) == "c"
+    assert list(linked) == ["b", "d"]
+    assert (linked.head.value, linked.tail.value) == ("b", "d")
+    linked.check_invariants()
+
+
+@pytest.mark.parametrize("index", [-1, 3, 10])
+def test_an_out_of_range_index_is_refused(index):
+    linked = DoublyLinkedList()
+    for value in range(3):
+        linked.push_back(value)
+
+    for operation in (lambda: linked.node_at(index), lambda: linked.remove_at(index)):
+        with pytest.raises(IndexError):
+            operation()
+    if index != 3:  # 3 = size es válido para insert
+        with pytest.raises(IndexError):
+            linked.insert(index, 9)
+    assert list(linked) == [0, 1, 2]
+
+
+@pytest.mark.parametrize("index", [1.0, "1", True, None])
+def test_an_index_that_is_not_an_integer_is_refused(index):
+    linked = DoublyLinkedList()
+    linked.push_back(1)
+
+    for operation in (
+        lambda: linked.node_at(index),
+        lambda: linked.remove_at(index),
+        lambda: linked.insert(index, 9),
+    ):
+        with pytest.raises(TypeError):
+            operation()
+    assert list(linked) == [1]
+
+
+def test_insert_next_to_a_foreign_or_removed_node_is_refused():
+    one, other = DoublyLinkedList(), DoublyLinkedList()
+    gone = one.push_back(1)
+    one.remove(gone)
+    foreign = other.push_back(2)
+
+    for wrong in (gone, foreign, DoublyNode(3), "not a node"):
+        for operation in (one.insert_after, one.insert_before):
+            with pytest.raises(ValueError):
+                operation(wrong, 9)
+    assert (list(one), list(other)) == ([], [2])
+
+
+def test_a_full_list_refuses_every_kind_of_insert():
+    linked = DoublyLinkedList(capacity=2)
+    first = linked.push_back(1)
+    linked.push_back(2)
+
+    for operation in (
+        lambda: linked.insert(1, 9),
+        lambda: linked.insert_after(first, 9),
+        lambda: linked.insert_before(first, 9),
+    ):
+        with pytest.raises(CapacityError):
+            operation()
+    assert list(linked) == [1, 2]
+    linked.check_invariants()
+
+
 # --- Uso como LRU ---------------------------------------------------------------------------------
 
 

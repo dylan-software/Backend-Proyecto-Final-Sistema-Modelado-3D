@@ -29,7 +29,13 @@ class DoublyLinkedList(Generic[T]):
     Costes (n = elementos):
         push_front, push_back, pop_front, pop_back, peek_front, peek_back, remove(nodo),
         move_to_front(nodo), move_to_back(nodo), len: O(1).
+        insert_after(nodo, v), insert_before(nodo, v): O(1) (insertar en cualquier posición con el nodo).
+        node_at(i), insert(i, v), remove_at(i): O(min(i, n - i)) (camina desde la cabeza o desde la
+            cola, por el lado más corto).
         Recorrer (iter, reversed), clear: O(n). check_invariants: O(n).
+
+    Índices: enteros en [0, size) (insert admite también size, que equivale a push_back). Los negativos
+    NO cuentan desde el final (lanzan IndexError) y un índice que no es entero lanza TypeError.
     Memoria: O(n), un nodo por elemento.
 
     capacity limita los elementos (None = sin límite); insertar con la lista llena lanza CapacityError.
@@ -98,6 +104,67 @@ class DoublyLinkedList(Generic[T]):
         self._size += 1
         return node
 
+    def insert_after(self, node: DoublyNode[T], value: T) -> DoublyNode[T]:
+        """Inserta value justo después de un nodo de ESTA lista y devuelve el nodo nuevo. O(1).
+
+        Si node es la cola, el nuevo pasa a ser la cola.
+
+        Raises:
+            ValueError: el nodo no pertenece a esta lista.
+            CapacityError: la lista ya tiene capacity elementos.
+        """
+        self._check_owner(node)
+        if node is self._tail:
+            return self.push_back(value)
+        new_node = self._new_node(value)
+        self._link_between(node, node.next, new_node)
+        self._size += 1
+        return new_node
+
+    def insert_before(self, node: DoublyNode[T], value: T) -> DoublyNode[T]:
+        """Inserta value justo antes de un nodo de ESTA lista y devuelve el nodo nuevo. O(1).
+
+        Si node es la cabeza, el nuevo pasa a ser la cabeza.
+
+        Raises:
+            ValueError: el nodo no pertenece a esta lista.
+            CapacityError: la lista ya tiene capacity elementos.
+        """
+        self._check_owner(node)
+        if node is self._head:
+            return self.push_front(value)
+        new_node = self._new_node(value)
+        self._link_between(node.prev, node, new_node)
+        self._size += 1
+        return new_node
+
+    def insert(self, index: int, value: T) -> DoublyNode[T]:
+        """Inserta value para que quede en el índice index y devuelve su nodo. O(min(i, n - i)).
+
+        index puede ir de 0 a size: 0 equivale a push_front y size a push_back.
+
+        Raises:
+            TypeError: index no es un entero (bool tampoco cuenta).
+            IndexError: index está fuera de [0, size].
+            CapacityError: la lista ya tiene capacity elementos.
+        """
+        self._check_index(index, self._size + 1)
+        if index == self._size:
+            return self.push_back(value)
+        return self.insert_before(self._walk(index), value)
+
+    # --- Acceso por índice --------------------------------------------------------------------------
+
+    def node_at(self, index: int) -> DoublyNode[T]:
+        """El nodo del índice index (0 = cabeza). O(min(i, n - i)).
+
+        Raises:
+            TypeError: index no es un entero (bool tampoco cuenta).
+            IndexError: index está fuera de [0, size).
+        """
+        self._check_index(index, self._size)
+        return self._walk(index)
+
     # --- Extracción -------------------------------------------------------------------------------
 
     def pop_front(self) -> T:
@@ -131,6 +198,15 @@ class DoublyLinkedList(Generic[T]):
         node.owner = None
         self._size -= 1
         return node.value
+
+    def remove_at(self, index: int) -> T:
+        """Quita el elemento del índice index y devuelve su valor. O(min(i, n - i)).
+
+        Raises:
+            TypeError: index no es un entero (bool tampoco cuenta).
+            IndexError: index está fuera de [0, size).
+        """
+        return self.remove(self.node_at(index))
 
     def peek_front(self) -> T:
         """El valor del frente, sin quitarlo. O(1).
@@ -213,6 +289,39 @@ class DoublyLinkedList(Generic[T]):
     def _check_owner(self, node: DoublyNode[T]) -> None:
         if not isinstance(node, DoublyNode) or node.owner is not self:
             raise ValueError("el nodo no pertenece a esta lista")
+
+    @staticmethod
+    def _check_index(index: int, limit: int) -> None:
+        """index debe ser un entero en [0, limit). O(1).
+
+        Raises:
+            TypeError: index no es un entero (bool tampoco cuenta).
+            IndexError: index está fuera de [0, limit).
+        """
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError(f"el índice debe ser un entero, no {type(index).__name__}")
+        if not 0 <= index < limit:
+            raise IndexError(f"índice {index} fuera de rango [0, {limit})")
+
+    def _walk(self, index: int) -> DoublyNode[T]:
+        """El nodo del índice index (ya validado), desde la cabeza o la cola según cuál esté más cerca."""
+        if index <= self._size // 2:
+            node = self._head
+            for _ in range(index):
+                node = node.next
+        else:
+            node = self._tail
+            for _ in range(self._size - 1 - index):
+                node = node.prev
+        return node
+
+    @staticmethod
+    def _link_between(before: DoublyNode[T], after: DoublyNode[T], node: DoublyNode[T]) -> None:
+        """Enlaza node entre dos nodos vecinos que no son None (before.next es after). O(1)."""
+        node.prev = before
+        node.next = after
+        before.next = node
+        after.prev = node
 
     def _link_front(self, node: DoublyNode[T]) -> None:
         node.prev = None
