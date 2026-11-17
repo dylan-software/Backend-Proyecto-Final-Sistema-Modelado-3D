@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from app.structures import FixedArray, InvariantError
+from app.structures import CapacityError, FixedArray, InvariantError
 
 OPERATIONS = 5000
 
@@ -60,7 +60,100 @@ def test_random_operations_match_a_list(seed):
         assert_same(array, reference, size)
 
 
+@pytest.mark.parametrize("seed", [30, 31, 32, 33, 34])
+def test_insert_at_and_remove_at_shift_like_a_list(seed):
+    rng = random.Random(seed)
+    size = rng.randint(1, 12)
+    default = rng.choice([None, -1, "libre"])
+    array, reference = FixedArray(size, default), [default] * size
+
+    for _ in range(OPERATIONS):
+        index = rng.randint(-2, size + 1)
+        value = rng.randint(0, 15)
+        if rng.random() < 0.5:
+            if not in_range(index, size):
+                with pytest.raises(IndexError):
+                    array.insert_at(index, value)
+            elif reference[-1] != default:
+                with pytest.raises(CapacityError):
+                    array.insert_at(index, value)
+            else:
+                array.insert_at(index, value)
+                reference.insert(index, value)
+                reference.pop()  # la última casilla (libre) sale por el final
+        elif in_range(index, size):
+            assert array.remove_at(index) == reference.pop(index)
+            reference.append(default)
+        else:
+            with pytest.raises(IndexError):
+                array.remove_at(index)
+        assert_same(array, reference, size)
+
+
 # --- Casos límite --------------------------------------------------------------------------------
+
+
+def test_insert_at_shifts_to_the_right_inside_the_same_storage():
+    array = FixedArray(5)
+    storage = array._slots
+    array.insert_at(0, "c")
+    array.insert_at(0, "a")
+    array.insert_at(1, "b")
+    array.insert_at(3, "d")
+
+    assert list(array) == ["a", "b", "c", "d", None]
+    array.insert_at(4, "e")  # el último índice también vale si está libre
+    assert list(array) == ["a", "b", "c", "d", "e"]
+    assert array._slots is storage and len(array) == 5
+    array.check_invariants()
+
+
+def test_insert_at_with_the_last_slot_taken_raises_and_changes_nothing():
+    array = FixedArray(3, default=0)
+    array[2] = 7
+
+    with pytest.raises(CapacityError):
+        array.insert_at(0, 1)
+    assert list(array) == [0, 0, 7]
+    array.remove_at(0)  # deja libre la última casilla
+    array.insert_at(0, 1)
+    assert list(array) == [1, 0, 7]
+
+
+def test_remove_at_shifts_to_the_left_and_refills_with_the_default():
+    array = FixedArray(4, default="-")
+    for index, value in enumerate("abcd"):
+        array[index] = value
+
+    assert array.remove_at(1) == "b"
+    assert list(array) == ["a", "c", "d", "-"]
+    assert array.remove_at(2) == "d"
+    assert array.remove_at(0) == "a"
+    assert list(array) == ["c", "-", "-", "-"]
+    assert array.remove_at(3) == "-"  # quitar una casilla libre devuelve el default
+    array.check_invariants()
+
+
+def test_a_single_slot_array():
+    array = FixedArray(1)
+    array.insert_at(0, "x")
+
+    with pytest.raises(CapacityError):
+        array.insert_at(0, "y")
+    assert array.remove_at(0) == "x"
+    assert list(array) == [None]
+
+
+@pytest.mark.parametrize("index", [-1, 3, 1.0, True])
+def test_insert_at_and_remove_at_check_the_index(index):
+    array = FixedArray(3, default=0)
+    error = IndexError if isinstance(index, int) and not isinstance(index, bool) else TypeError
+
+    with pytest.raises(error):
+        array.insert_at(index, 5)
+    with pytest.raises(error):
+        array.remove_at(index)
+    assert list(array) == [0, 0, 0]
 
 
 @pytest.mark.parametrize("size", [0, -1, 2.5, "3", True, None])

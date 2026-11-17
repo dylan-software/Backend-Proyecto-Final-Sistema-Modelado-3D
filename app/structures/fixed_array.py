@@ -3,7 +3,7 @@
 from collections.abc import Iterator
 from typing import Generic, TypeVar
 
-from app.structures.exceptions import InvariantError, validate_capacity
+from app.structures.exceptions import CapacityError, InvariantError, validate_capacity
 
 T = TypeVar("T")
 
@@ -12,18 +12,24 @@ class FixedArray(Generic[T]):
     """Arreglo de tamaño fijo sobre una list preasignada.
 
     La reserva se hace una sola vez en el constructor ([default] * size) y nunca crece ni encoge:
-    no hay append, insert ni pop. Solo se leen y escriben casillas existentes.
+    no hay append, insert ni pop. Se leen y escriben casillas existentes, y insert_at / remove_at
+    desplazan elementos DENTRO de la misma reserva, como en el arreglo estático del curso.
 
-    Costes (n = size):
+    Costes (n = size, i = índice):
         get, set, a[i], a[i] = v, len, size: O(1).
+        insert_at(i, v), remove_at(i): O(n - i) (desplazan las casillas de i en adelante).
         fill, index_of, recorrer (iter): O(n). check_invariants: O(1).
     Memoria: O(n), reservada al crear el arreglo.
+
+    Casilla libre: la que es igual (==) a default, la misma comparación que usa index_of. insert_at
+    necesita libre la ÚLTIMA casilla, porque el desplazamiento la sobrescribe; si está ocupada lanza
+    CapacityError y no cambia nada. remove_at rellena la última casilla con default.
 
     Índices: solo enteros en [0, size). Los negativos NO cuentan desde el final (lanzan IndexError) y
     no se admiten slices. default se comparte (es el mismo objeto) en todas las casillas iniciales.
     """
 
-    __slots__ = ("_size", "_slots")
+    __slots__ = ("_default", "_size", "_slots")
 
     def __init__(self, size: int, default: T | None = None):
         """Reserva size casillas con default. O(n).
@@ -38,6 +44,7 @@ class FixedArray(Generic[T]):
         if valid_size is None:
             raise ValueError("size debe ser un entero mayor que 0")
         self._size: int = valid_size
+        self._default: T | None = default  # lo usa remove_at para rellenar la casilla que queda libre
         self._slots: list[T | None] = [default] * valid_size
 
     @property
@@ -84,6 +91,41 @@ class FixedArray(Generic[T]):
 
     def __setitem__(self, index: int, value: T) -> None:
         self.set(index, value)
+
+    def insert_at(self, index: int, value: T) -> None:
+        """Escribe value en index desplazando una casilla a la derecha las de index en adelante. O(n - i).
+
+        La última casilla desaparece con el desplazamiento, así que tiene que estar libre (== default).
+
+        Raises:
+            TypeError: index no es un entero.
+            IndexError: index está fuera de [0, size).
+            CapacityError: la última casilla está ocupada (no se pierde nada: el arreglo no cambia).
+        """
+        self._check_index(index)
+        last = self._size - 1
+        if self._slots[last] != self._default:
+            raise CapacityError(f"la última casilla ({last}) está ocupada: no hay sitio para desplazar")
+        for position in range(last, index, -1):
+            self._slots[position] = self._slots[position - 1]
+        self._slots[index] = value
+
+    def remove_at(self, index: int) -> T | None:
+        """Quita y devuelve la casilla index desplazando a la izquierda las siguientes. O(n - i).
+
+        La última casilla queda libre: se rellena con default.
+
+        Raises:
+            TypeError: index no es un entero.
+            IndexError: index está fuera de [0, size).
+        """
+        self._check_index(index)
+        removed = self._slots[index]
+        last = self._size - 1
+        for position in range(index, last):
+            self._slots[position] = self._slots[position + 1]
+        self._slots[last] = self._default
+        return removed
 
     def fill(self, value: T) -> None:
         """Escribe value en todas las casillas, sin cambiar la reserva. O(n)."""
