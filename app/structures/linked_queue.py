@@ -21,8 +21,13 @@ class QueueNode(Generic[T]):
 class LinkedQueue(Generic[T]):
     """Cola FIFO: se añade por el final y se saca por el frente.
 
+    Está construida como una lista simplemente enlazada: cada QueueNode guarda el dato (value) y una sola
+    referencia al siguiente nodo (next), del frente hacia el final. Guarda punteros a la cabeza (frente) y
+    a la cola (final), así que encolar y desencolar no recorren la lista.
+
     Costes (n = elementos):
         enqueue, dequeue, peek, peek_back, len, is_empty, is_full: O(1).
+        front (alias de peek), rear (alias de peek_back), size (alias de len): O(1).
         Recorrer (iter), clear: O(n). check_invariants: O(n).
     Memoria: O(n), un nodo por elemento.
 
@@ -40,6 +45,11 @@ class LinkedQueue(Generic[T]):
         return self._capacity
 
     def __len__(self) -> int:
+        return self._size
+
+    @property
+    def size(self) -> int:
+        """Cuántos elementos hay: el nombre del curso para len(cola). O(1)."""
         return self._size
 
     def __bool__(self) -> bool:
@@ -102,6 +112,22 @@ class LinkedQueue(Generic[T]):
         if self._tail is None:
             raise IndexError("peek_back de una cola vacía")
         return self._tail.value
+
+    def front(self) -> T:
+        """El elemento del frente, sin sacarlo: el nombre del curso para peek. O(1).
+
+        Raises:
+            IndexError: la cola está vacía.
+        """
+        return self.peek()
+
+    def rear(self) -> T:
+        """El último elemento añadido, sin sacarlo: el nombre del curso para peek_back. O(1).
+
+        Raises:
+            IndexError: la cola está vacía.
+        """
+        return self.peek_back()
 
     def clear(self) -> None:
         """Vacía la cola. O(n): desengancha cada nodo."""

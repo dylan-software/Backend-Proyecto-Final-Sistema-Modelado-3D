@@ -84,6 +84,23 @@ def test_an_empty_queue():
     queue.check_invariants()
 
 
+def test_front_rear_and_size_are_aliases():
+    queue = LinkedQueue()
+    assert queue.size == 0
+    for operation in (queue.front, queue.rear):
+        with pytest.raises(IndexError):
+            operation()
+    for value in "abc":
+        queue.enqueue(value)
+
+    assert (queue.front(), queue.rear(), queue.size) == ("a", "c", 3)
+    assert (queue.front(), queue.rear()) == (queue.peek(), queue.peek_back())
+    assert queue.size == len(queue)  # front y rear no sacan nada
+    queue.dequeue()
+    assert (queue.front(), queue.rear(), queue.size) == ("b", "c", 2)
+    queue.check_invariants()
+
+
 def test_a_single_element_is_front_and_back():
     queue = LinkedQueue()
     queue.enqueue("a")
