@@ -58,7 +58,19 @@ class NaryTree(Generic[T]):
         depth(nodo): O(h).
         depth_first / walk (preorden con pila propia LinkedStack), count(nodo): O(k) tiempo y O(k)
             memoria de la pila en el peor caso. values, check_invariants: O(n).
+    Operaciones con los nombres del curso:
+        degree(nodo): O(1). weight() del árbol entero: O(1); weight(nodo) de un subárbol: O(k).
+        level(nodo): O(h). height(), leaves(), order(): O(k) con un recorrido en profundidad (O(n) para
+        el árbol entero).
     Memoria: O(n), un nodo por valor; cada nodo guarda 6 referencias y un contador.
+
+    Dos formas de contar la profundidad, y no se mezclan:
+        - depth(nodo) cuenta ARISTAS desde la raíz: la raíz tiene depth 0. Es lo que usa walk.
+        - level(nodo) cuenta NIVELES como en las diapositivas del curso: la raíz está en el nivel 1, así
+          que level(nodo) = depth(nodo) + 1.
+    height() usa los niveles del curso: es el nivel más profundo, y un árbol de un solo nodo tiene
+    altura 1. Grado de un nodo = número de hijos; orden del árbol = el mayor grado de sus nodos; peso =
+    número de nodos.
 
     capacity limita el total de nodos incluida la raíz (None = sin límite); add_child con el árbol lleno
     lanza CapacityError. La raíz no se puede quitar.
@@ -195,6 +207,76 @@ class NaryTree(Generic[T]):
         for _ in self.walk(start):
             total += 1
         return total
+
+    # --- Medidas con los nombres del curso -----------------------------------------------------------
+
+    def level(self, node: TreeNode[T]) -> int:
+        """El nivel de node contando la raíz como nivel 1 (las diapositivas del curso). O(h).
+
+        Es depth(node) + 1: la raíz está en el nivel 1, sus hijos en el 2, y así.
+
+        Raises:
+            ValueError: node no pertenece a este árbol.
+        """
+        return self.depth(node) + 1
+
+    def height(self, start: TreeNode[T] | None = None) -> int:
+        """La altura del subárbol de start (la raíz si es None): el nivel más profundo, con start en el 1.
+
+        Un árbol de un solo nodo tiene altura 1. Para el árbol entero coincide con el mayor level(n).
+        O(k) con un recorrido en profundidad.
+
+        Raises:
+            ValueError: start no pertenece a este árbol.
+        """
+        deepest = 0
+        for _, depth in self.walk(start):
+            if depth > deepest:
+                deepest = depth
+        return deepest + 1
+
+    def degree(self, node: TreeNode[T]) -> int:
+        """El grado de node: cuántos hijos tiene. O(1).
+
+        Raises:
+            ValueError: node no pertenece a este árbol.
+        """
+        self._check_owner(node)
+        return node.child_count
+
+    def order(self, start: TreeNode[T] | None = None) -> int:
+        """El orden del subárbol de start (la raíz si es None): el mayor grado de sus nodos. O(k).
+
+        Un árbol de un solo nodo tiene orden 0.
+
+        Raises:
+            ValueError: start no pertenece a este árbol.
+        """
+        highest = 0
+        for node in self.depth_first(start):
+            if node.child_count > highest:
+                highest = node.child_count
+        return highest
+
+    def weight(self, start: TreeNode[T] | None = None) -> int:
+        """El peso: cuántos nodos hay. Sin start, el árbol entero en O(1); con start, su subárbol en O(k).
+
+        Raises:
+            ValueError: start no pertenece a este árbol.
+        """
+        if start is None:
+            return self._size
+        return self.count(start)
+
+    def leaves(self, start: TreeNode[T] | None = None) -> Iterator[TreeNode[T]]:
+        """Las hojas (nodos sin hijos) del subárbol de start, en preorden: de izquierda a derecha. O(k).
+
+        Raises:
+            ValueError: start no pertenece a este árbol.
+        """
+        for node in self.depth_first(start):
+            if node.first_child is None:
+                yield node
 
     def values(self) -> Iterator[T]:
         """Los valores de todo el árbol en preorden. O(n)."""

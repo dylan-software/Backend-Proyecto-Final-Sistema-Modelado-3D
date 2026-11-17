@@ -47,6 +47,16 @@ class ReferenceTree:
             levels += 1
         return levels
 
+    def height(self, node_id=0):
+        """Niveles del curso: un nodo solo tiene altura 1."""
+        return 1 + max((self.height(child) for child in self.children[node_id]), default=0)
+
+    def leaves(self, node_id=0):
+        return [i for i in self.preorder(node_id) if not self.children[i]]
+
+    def order(self, node_id=0):
+        return max(len(self.children[i]) for i in self.preorder(node_id))
+
 
 def assert_same(tree, nodes, reference):
     tree.check_invariants()
@@ -102,6 +112,98 @@ def test_random_operations_match_the_reference(seed):
         if step % 50 == 0:
             assert_same(tree, nodes, reference)
     assert_same(tree, nodes, reference)
+
+
+@pytest.mark.parametrize("seed", [21, 22, 23])
+def test_course_measures_match_the_reference(seed):
+    rng = random.Random(seed)
+    tree, reference = NaryTree("raíz"), ReferenceTree("raíz")
+    nodes = {0: tree.root}
+
+    for step in range(600):
+        target = rng.choice(list(reference.values))
+        if rng.random() < 0.85 or target == 0:
+            nodes[reference.add(target, step)] = tree.add_child(nodes[target], step)
+        else:
+            tree.remove(nodes[target])
+            reference.remove(target)
+            for gone in [i for i in nodes if i not in reference.values]:
+                del nodes[gone]
+        target = rng.choice(list(reference.values))
+        node = nodes[target]
+        assert tree.level(node) == reference.depth(target) + 1
+        assert tree.degree(node) == len(reference.children[target])
+        assert tree.height(node) == reference.height(target)
+        assert tree.order(node) == reference.order(target)
+        assert tree.weight(node) == len(reference.preorder(target))
+        assert list(tree.leaves(node)) == [nodes[i] for i in reference.leaves(target)]
+        if step % 50 == 0:
+            assert tree.height() == reference.height()
+            assert tree.order() == reference.order()
+            assert tree.weight() == len(tree) == len(reference.values)
+            assert list(tree.leaves()) == [nodes[i] for i in reference.leaves()]
+            assert tree.height() == max(tree.level(nodes[i]) for i in reference.values)
+    tree.check_invariants()
+
+
+def test_course_measures_of_a_single_node_tree():
+    tree = NaryTree("cuenta")
+
+    assert tree.level(tree.root) == 1  # la raíz está en el nivel 1
+    assert tree.depth(tree.root) == 0  # depth sigue contando aristas
+    assert tree.height() == 1
+    assert (tree.degree(tree.root), tree.order(), tree.weight()) == (0, 0, 1)
+    assert list(tree.leaves()) == [tree.root]
+
+
+def test_course_measures_of_a_small_tree():
+    tree = NaryTree("cuenta")
+    first = tree.add_child(tree.root, "grupo 1")
+    second = tree.add_child(tree.root, "grupo 2")
+    p1 = tree.add_child(first, "p1")
+    p2 = tree.add_child(first, "p2")
+    p3 = tree.add_child(first, "p3")
+    p4 = tree.add_child(second, "p4")
+    detail = tree.add_child(p4, "detalle")
+
+    assert [tree.level(n) for n in (tree.root, first, p1, detail)] == [1, 2, 3, 4]
+    assert tree.height() == 4
+    assert (tree.height(first), tree.height(second), tree.height(p1)) == (2, 3, 1)
+    assert [tree.degree(n) for n in (tree.root, first, second, p4, detail)] == [2, 3, 1, 1, 0]
+    assert (tree.order(), tree.order(second)) == (3, 1)
+    assert (tree.weight(), tree.weight(first), tree.weight(second)) == (8, 4, 3)
+    assert list(tree.leaves()) == [p1, p2, p3, detail]
+    assert list(tree.leaves(second)) == [detail]
+
+    tree.remove(first)
+    assert (tree.height(), tree.order(), tree.weight()) == (4, 1, 4)
+    assert list(tree.leaves()) == [detail]
+    tree.check_invariants()
+
+
+def test_course_measures_reject_foreign_and_removed_nodes():
+    tree, other = NaryTree(0), NaryTree(0)
+    foreign = other.add_child(other.root, 1)
+    gone = tree.add_child(tree.root, 2)
+    tree.remove(gone)
+    for bad in (foreign, gone, TreeNode(5), "no es un nodo"):
+        for operation in (tree.level, tree.height, tree.degree, tree.order, tree.weight):
+            with pytest.raises(ValueError):
+                operation(bad)
+        with pytest.raises(ValueError):
+            list(tree.leaves(bad))
+
+
+def test_height_of_a_very_deep_tree_does_not_recurse():
+    tree = NaryTree(0)
+    node = tree.root
+    for value in range(1, 20_000):
+        node = tree.add_child(node, value)
+
+    assert tree.height() == 20_000
+    assert tree.level(node) == 20_000
+    assert list(tree.leaves()) == [node]
+    assert tree.order() == 1
 
 
 def test_a_new_tree_has_only_its_root():
