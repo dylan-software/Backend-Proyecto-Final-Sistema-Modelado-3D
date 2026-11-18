@@ -10,7 +10,12 @@ from pydantic import ConfigDict, field_validator
 from pydantic.alias_generators import to_camel
 
 from app.schemas.room import CamelModel, Vertex
-from app.schemas.text import MAX_PROJECT_NAME_LENGTH, optional_description, plain_name
+from app.schemas.text import (
+    MAX_PROJECT_DESCRIPTION_LENGTH,
+    MAX_PROJECT_NAME_LENGTH,
+    optional_description,
+    plain_name,
+)
 
 # Publicaciones por página del catálogo y última página que se puede pedir.
 CATALOG_PAGE_SIZE = 24
@@ -33,7 +38,8 @@ class PublicationWrite(CamelModel):
     @field_validator("description", mode="before")
     @classmethod
     def check_description(cls, value):
-        return optional_description(value)
+        # Mismo límite que la descripción del proyecto (MAX_PROJECT_DESCRIPTION_LENGTH).
+        return optional_description(value, MAX_PROJECT_DESCRIPTION_LENGTH)
 
 
 class OwnPublication(CamelModel):

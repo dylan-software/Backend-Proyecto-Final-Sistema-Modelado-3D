@@ -9,7 +9,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic.alias_generators import to_camel
 
 from app.schemas.photo import OBJECT_MAX_SIDE_CM, OBJECT_MIN_SIDE_CM, clean_plain_text
-from app.schemas.text import MAX_PROJECT_NAME_LENGTH, optional_description, plain_name
+from app.schemas.text import (
+    MAX_PROJECT_DESCRIPTION_LENGTH,
+    MAX_PROJECT_NAME_LENGTH,
+    optional_description,
+    plain_name,
+)
 
 # Sanity limits: far beyond any real room, small enough to keep the geometry checks cheap.
 MAX_COORDINATE_M = 1000
@@ -46,7 +51,7 @@ class RoomCreate(CamelModel):
     @field_validator("description", mode="before")
     @classmethod
     def check_description(cls, value):
-        return optional_description(value)
+        return optional_description(value, MAX_PROJECT_DESCRIPTION_LENGTH)
 
 
 class RoomUpdate(CamelModel):
@@ -65,7 +70,8 @@ class RoomUpdate(CamelModel):
     @field_validator("description", mode="before")
     @classmethod
     def check_description(cls, value):
-        return optional_description(value)
+        # Solo se valida si llega: un PATCH sin description no toca una descripción antigua más larga.
+        return optional_description(value, MAX_PROJECT_DESCRIPTION_LENGTH)
 
     @model_validator(mode="after")
     def at_least_one_field(self):

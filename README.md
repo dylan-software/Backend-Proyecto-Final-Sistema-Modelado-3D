@@ -139,8 +139,11 @@ habitación y se devuelven en `contexto_visual`.
 Grupos de proyectos (migración 005 del repo database; el backend la aplica al arrancar en PostgreSQL,
 RLS de `grupos_proyecto` incluido): un grupo es una carpeta de proyectos con una descripción libre, y cada
 proyecto (sala) puede tener grupo y descripción. Nombres en texto plano sin espacios en los extremos (1-80
-caracteres el grupo, 1-120 el proyecto; sin `<`, `>` ni caracteres de control); descripciones de hasta 1000
-caracteres, con saltos de línea y tabuladores; vacías se guardan como `null`. Los 422 no repiten la
+caracteres el grupo, 1-120 el proyecto; sin `<`, `>` ni caracteres de control); descripciones con saltos de
+línea y tabuladores, de hasta 1000 caracteres la del grupo y 500 la del proyecto (se cuentan tras quitar los
+espacios de los extremos); vacías se guardan como `null`. El límite de 500 solo se aplica a lo que se envía
+en `POST` y `PATCH`: la base sigue admitiendo 1000 (sin migración), así que una descripción antigua más larga
+se sigue mostrando, un `PATCH` sin `description` la conserva y solo hay que recortarla al editarla. Los 422 no repiten la
 entrada, lo ajeno responde 404 y nada de esto gasta cuota de IA. `GET /api/v1/spaces` añade `group_id` y
 `description` a cada sala. No hay borrado de grupos todavía; `habitaciones.derivado_de` está reservado.
 
@@ -329,7 +332,8 @@ crea la tabla, sus índices y su RLS al arrancar en PostgreSQL, igual que con la
   si la importación lo rechazaría, la publicación responde 422 con el mismo mensaje fijo; si pasaría de
   256 KB, 413. Los cambios posteriores del proyecto no se ven en la red hasta volver a publicar (PUT), que
   conserva el código, las copias y la fecha de publicación. La descripción privada del proyecto no se
-  publica: la publicación tiene su propia descripción (hasta 1000 caracteres).
+  publica: la publicación tiene su propia descripción, con el mismo límite que la del proyecto (500
+  caracteres al publicar o actualizar; las antiguas más largas se siguen mostrando).
 - **Despublicar borra la fila**: no queda guardada la copia congelada.
 - **Copiar** importa la copia congelada con el mismo código que `POST /rooms/import`
   (`save_imported_project`): proyecto nuevo de quien copia, ids nuevos, sin grupo ni descripción, mismo
