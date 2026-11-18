@@ -13,6 +13,39 @@ logger = logging.getLogger("app.audit")
 # Response header with the server-side processing time in milliseconds, e.g. "X-Process-Time: 12.34".
 PROCESS_TIME_HEADER = "X-Process-Time"
 
+# HSTS (RFC 6797): el navegador recuerda durante un año (31 536 000 s) que este dominio y sus subdominios
+# solo se usan por HTTPS. Sin "preload": esa lista exige ser dueño del dominio y onrender.com no lo es.
+HSTS_HEADER = "Strict-Transport-Security"
+HSTS_VALUE = "max-age=31536000; includeSubDomains"
+
+
+class StrictTransportSecurityMiddleware:
+    """Añade Strict-Transport-Security a todas las respuestas HTTP que pasan por él.
+
+    Los navegadores solo hacen caso de la cabecera cuando llega por HTTPS (RFC 6797, 8.1): en local, por
+    http://localhost, se ignora y no molesta. La redirección de HTTP a HTTPS la hace el proxy de Render,
+    no la aplicación: uvicorn arranca con --no-proxy-headers y aquí todas las peticiones parecen HTTP.
+    Si la respuesta ya trae la cabecera, no se duplica.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_hsts(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                if not any(name.lower() == HSTS_HEADER.lower().encode() for name, _ in headers):
+                    headers.append((HSTS_HEADER.lower().encode(), HSTS_VALUE.encode()))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_hsts)
+
 
 class AuditLoggingMiddleware(BaseHTTPMiddleware):
     """Audits every HTTP request that reaches the server.

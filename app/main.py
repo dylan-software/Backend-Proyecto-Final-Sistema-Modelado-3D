@@ -24,9 +24,12 @@ from app.routers.spaces import router as spaces_router
 from app.services.project_import import IMPORT_PATH, MAX_IMPORT_BYTES
 from app.utils.logging_config import configure_logging
 from app.utils.middlewares import (
+    HSTS_HEADER,
+    HSTS_VALUE,
     PROCESS_TIME_HEADER,
     AuditLoggingMiddleware,
     BodySizeLimitMiddleware,
+    StrictTransportSecurityMiddleware,
     TrailingSlashMiddleware,
 )
 
@@ -80,6 +83,9 @@ app.add_middleware(
 )
 # Added last, so it is the outermost middleware and its timing covers CORS and the endpoint itself.
 app.add_middleware(AuditLoggingMiddleware)
+# HSTS en todas las respuestas (también 413, 429 y las preflight de CORS). Va por fuera de todo; el 500
+# genérico se construye fuera de la pila de middlewares y la añade él mismo (unhandled_exception_handler).
+app.add_middleware(StrictTransportSecurityMiddleware)
 
 
 @app.exception_handler(RequestValidationError)
@@ -117,7 +123,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     """
     request_id = new_request_id()
     logger.exception("request_id=%s Unhandled error in %s %s", request_id, request.method, request.url.path)
-    headers = {}
+    # Esta respuesta no pasa por StrictTransportSecurityMiddleware: la cabecera se pone aquí.
+    headers = {HSTS_HEADER: HSTS_VALUE}
     # This response is built outside CORSMiddleware, so the CORS header has to be set here or the
     # browser hides the body from the frontend and reports a CORS error instead.
     # Only allowed origins are echoed back, exactly as CORSMiddleware does.
