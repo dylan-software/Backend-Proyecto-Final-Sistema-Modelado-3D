@@ -166,6 +166,58 @@ Index(
     postgresql_where=ProjectPublication.public,
 )
 
+# Catálogo por autor y página del perfil: las públicas de cada cuenta de la más nueva a la más vieja
+# (migración 007; parcial en PostgreSQL, completo en SQLite).
+Index(
+    "ix_publicaciones_proyecto_autor",
+    ProjectPublication.user_id,
+    ProjectPublication.id.desc(),
+    postgresql_where=ProjectPublication.public,
+)
+
+# Máximo de caracteres del nombre visible de un perfil, igual que la migración 007.
+MAX_DISPLAY_NAME_LENGTH = 40
+
+
+class PublicProfile(Base):
+    """Perfil público de una cuenta en la red social (migración 007).
+
+    Uno por cuenta, creado al publicar por primera vez (o por la migración, anónimo, para quien ya había
+    publicado). `code` es el único id público. `display_name` lo escribe el dueño en el diálogo de
+    publicar; None = anónimo. Nunca se copia de usuarios.nombre. `user_id` e `id` nunca salen en la API.
+    """
+
+    __tablename__ = "perfiles_publicos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64))
+    code: Mapped[str] = mapped_column("codigo", String(24))
+    display_name: Mapped[str | None] = mapped_column(
+        "nombre_visible", String(MAX_DISPLAY_NAME_LENGTH), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        "creado_en",
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        "actualizado_en",
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+    # Mismos nombres que la migración 007. length() en vez de char_length() por SQLite, como en la 005.
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_perfiles_publicos_user_id"),
+        UniqueConstraint("codigo", name="uq_perfiles_publicos_codigo"),
+        CheckConstraint(
+            f"length(nombre_visible) BETWEEN 1 AND {MAX_DISPLAY_NAME_LENGTH}",
+            name="ck_perfiles_publicos_nombre_visible_len",
+        ),
+    )
+
 
 class Categoria(Base):
     __tablename__ = "categorias"

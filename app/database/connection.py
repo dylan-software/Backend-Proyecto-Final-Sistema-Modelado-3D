@@ -133,3 +133,32 @@ async def add_project_publication_statements(conn):
         return
     for statement in PROJECT_PUBLICATION_STATEMENTS:
         await conn.execute(text(statement))
+
+
+# Migración 007 (perfiles públicos), con el mismo SQL que el repo database. create_all ya crea la tabla
+# con sus UNIQUE y su CHECK; esto añade el índice parcial por autor, el RLS y un perfil ANÓNIMO para cada
+# cuenta que ya publicó y aún no tiene perfil (no aceptó mostrar un nombre). Todo es no-op si ya estaba.
+PUBLIC_PROFILE_STATEMENTS = (
+    "CREATE INDEX IF NOT EXISTS ix_publicaciones_proyecto_autor ON publicaciones_proyecto (user_id, id DESC) "
+    "WHERE publica",
+    # Igual que las demás tablas: RLS sin políticas cierra la API REST de Supabase; el backend es dueño.
+    "ALTER TABLE perfiles_publicos ENABLE ROW LEVEL SECURITY",
+    # gen_random_uuid() es del núcleo de PostgreSQL 13+: 16 caracteres hex, válidos para el patrón público.
+    "INSERT INTO perfiles_publicos (user_id, codigo) "
+    "SELECT authors.user_id, left(replace(gen_random_uuid()::text, '-', ''), 16) "
+    "FROM (SELECT DISTINCT user_id FROM publicaciones_proyecto) AS authors "
+    "WHERE NOT EXISTS (SELECT 1 FROM perfiles_publicos p WHERE p.user_id = authors.user_id) "
+    "ON CONFLICT DO NOTHING",
+)
+
+
+async def add_public_profile_statements(conn):
+    """Índice por autor, RLS y perfiles anónimos de perfiles_publicos (migración 007).
+
+    Solo PostgreSQL; no-op si ya estaban. En SQLite (las pruebas) create_all crea la tabla y el índice, y
+    los perfiles se crean al publicar.
+    """
+    if conn.dialect.name != "postgresql":
+        return
+    for statement in PUBLIC_PROFILE_STATEMENTS:
+        await conn.execute(text(statement))
