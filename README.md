@@ -84,7 +84,8 @@ de esta carpeta.
 | `IMPORTS_PER_HOUR` | Proyectos importados correctamente por cuenta y hora (20 por defecto). Más allá, `POST /rooms/import` responde 429 con `Retry-After`. |
 | `MAX_PUBLICATIONS_PER_USER` | Proyectos publicados a la vez por cuenta en la red social (20 por defecto). Al llegar, publicar uno nuevo responde 409. |
 | `PUBLICATION_CHANGES_PER_HOUR` | Publicar, actualizar o despublicar correctamente, por cuenta y hora (30 por defecto). Más allá, 429 con `Retry-After`. |
-| `SOCIAL_READS_PER_MINUTE` | Lecturas del catálogo de la red social por cuenta y minuto (60 por defecto). Más allá, 429 con `Retry-After`. |
+| `SOCIAL_READS_PER_MINUTE` | Lecturas de la red social (catálogo, catálogo por autor y perfiles) por cuenta y minuto (60 por defecto). Más allá, 429 con `Retry-After`. |
+| `PROFILE_CHANGES_PER_HOUR` | Cambios correctos del nombre visible del perfil público por cuenta y hora (10 por defecto). Más allá, 429 con `Retry-After`. |
 | `TRUSTED_PROXY_HOPS` | Proxies propios delante del servidor que añaden entradas a `X-Forwarded-For` (0 por defecto: se ignora la cabecera). En Render, `1` (ya en `render.yaml`). |
 
 Autenticación: todos los endpoints con datos de usuario (`/api/v1/spaces/*`, `/api/v1/chat` y `/geometry/*`) exigen
@@ -121,6 +122,10 @@ responden 404, igual que los inexistentes. `/`, `/api/v1/health` y `/api/v1/auth
 | DELETE | `/api/v1/spaces/rooms/{id}/publication` | Deja de publicar: borra la publicación → 204. 404 si no estaba publicado. |
 | GET | `/api/v1/social/publications?page=N` | Catálogo público: `{items: [{code, title, description, publishedAt, updatedAt, copies, mine, room: {vertices, heightM, areaM2}, itemCount}], page, hasMore}`, 24 por página. |
 | POST | `/api/v1/social/publications/{code}/copy` | Copia una publicación pública como proyecto nuevo de la cuenta → 201 `{room, items}`, como importar. |
+| GET | `/api/v1/social/authors?page=N` | Catálogo por autor: una tarjeta por cuenta (su publicación pública más reciente) con los campos del catálogo más `author: {code, displayName, mine} \| null` y `authorPublicationCount`; 24 por página. |
+| GET | `/api/v1/social/profiles/{code}?page=N` | Perfil público: `{profile: {code, displayName, publicationCount, mine}, items, page, hasMore}`. 404 si el código no existe. |
+| GET | `/api/v1/social/me/profile` | `{profile}` de la cuenta, o `{profile: null}` si aún no tiene. No crea nada. |
+| PATCH | `/api/v1/social/me/profile` | `{displayName}` (1-40, texto plano; `null` o vacío = anónimo). Crea el perfil si falta → 200 `{code, displayName, publicationCount, mine}`. 422, 429. |
 | POST | `/api/v1/chat` | Chat sobre una sala: `{roomId, messages}` → `{role: "assistant", content, changes}`; puede añadir, quitar y mover objetos. |
 | POST | `/geometry/point-cloud` | Solo el filtro RANSAC sobre una nube de puntos. |
 | POST | `/geometry/collision` | Solo la validación de colisiones de una caja. |
@@ -347,6 +352,24 @@ crea la tabla, sus índices y su RLS al arrancar en PostgreSQL, igual que con la
   publicaciones públicas; son públicas solo a través de este backend, y siempre con sesión.
 - Ningún endpoint de la red social gasta cuota de IA.
 
+### Perfiles públicos
+
+Contrato: `CONTRATO-HABITA-PERFILES.md` (parte A, con el recorte aprobado). Tabla `perfiles_publicos`
+(migración 007; el backend crea la tabla, el índice parcial `ix_publicaciones_proyecto_autor`, el RLS y
+los perfiles anónimos de quien ya había publicado al arrancar en PostgreSQL). Código en
+`app/services/public_profile.py` y `app/routers/social.py`.
+
+- **Un perfil por cuenta**, con un código público aleatorio de 16 caracteres que no cambia nunca y un
+  nombre visible opcional (1-40, texto plano). Sin nombre, la interfaz muestra "Autor anónimo". El
+  backend **nunca** copia `usuarios.nombre`: el nombre visible solo existe si el dueño lo escribe.
+- **Se crea** al publicar (anónimo, en la misma transacción; una publicación fallida no lo crea) o con
+  el primer `PATCH /me/profile`.
+- **Catálogo por autor** en `GET /social/authors`: una tarjeta por cuenta con su publicación pública de
+  `id` más alto, autores por ese `id` de mayor a menor, en tres consultas por página (tarjetas, perfiles y
+  recuentos agrupados). `GET /social/publications` **no cambia**.
+- Lo público del perfil es solo código, nombre visible, número de publicaciones públicas y `mine`; nunca
+  el `user_id`, el correo, `usuarios.nombre` ni ids internos.
+
 ## Límites de peticiones
 
 Los contadores viven en memoria (`app/utils/rate_limit.py`, ventanas deslizantes, sin dependencias):
@@ -373,8 +396,9 @@ Superar un límite responde 429 con la cabecera `Retry-After` en segundos. CORS 
   cuenta en este mismo cupo.
 - **Red social, por cuenta.** Como mucho 20 proyectos publicados a la vez (`MAX_PUBLICATIONS_PER_USER`,
   409), 30 publicaciones, actualizaciones o retiradas por hora (`PUBLICATION_CHANGES_PER_HOUR`; solo
-  cuentan las guardadas) y 60 lecturas del catálogo por minuto (`SOCIAL_READS_PER_MINUTE`; cuenta cada
-  petición).
+  cuentan las guardadas) y 60 lecturas por minuto (`SOCIAL_READS_PER_MINUTE`; cuenta cada petición y
+  la comparten el catálogo, el catálogo por autor y la página de un perfil). El nombre visible se puede
+  cambiar 10 veces por hora (`PROFILE_CHANGES_PER_HOUR`; solo cuentan los cambios guardados).
 
 **La IP detrás del proxy de Render.** `X-Forwarded-For` es una lista que empieza el cliente: puede enviar
 `X-Forwarded-For: 1.2.3.4` y cada proxy añade al final la IP que vio. Solo son fiables las entradas que

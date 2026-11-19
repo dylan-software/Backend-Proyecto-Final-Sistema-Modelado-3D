@@ -9,6 +9,7 @@ from datetime import datetime
 from pydantic import ConfigDict, field_validator
 from pydantic.alias_generators import to_camel
 
+from app.models.space import MAX_DISPLAY_NAME_LENGTH
 from app.schemas.room import CamelModel, Vertex
 from app.schemas.text import (
     MAX_PROJECT_DESCRIPTION_LENGTH,
@@ -84,3 +85,81 @@ class PublicationCatalog(CamelModel):
     items: list[PublicPublication]
     page: int
     has_more: bool
+
+
+# --- Perfiles públicos (CONTRATO-HABITA-PERFILES.md, parte A) ------------------------------------------
+
+
+def display_name_or_none(value):
+    """Nombre visible validado: None si falta o queda vacío tras recortar (= anónimo).
+
+    Raises:
+        ValueError: no es texto, pasa de MAX_DISPLAY_NAME_LENGTH o tiene '<', '>' o caracteres de control.
+            El mensaje nunca repite el texto.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return plain_name(value, MAX_DISPLAY_NAME_LENGTH)
+
+
+class ProfileWrite(CamelModel):
+    """Cuerpo de PATCH /social/me/profile. `displayName` es obligatorio; null o "" = anónimo."""
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+
+    display_name: str | None
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def check_display_name(cls, value):
+        return display_name_or_none(value)
+
+
+class AuthorOut(CamelModel):
+    """Autor de una tarjeta: solo el código público y el nombre que eligió (None = anónimo)."""
+
+    code: str
+    display_name: str | None
+    mine: bool
+
+
+class ProfileOut(CamelModel):
+    """Perfil público: código, nombre visible, número de publicaciones públicas y si es de quien mira."""
+
+    code: str
+    display_name: str | None
+    publication_count: int
+    mine: bool
+
+
+class AuthorCard(PublicPublication):
+    """Tarjeta del catálogo por autor: su publicación pública más reciente, con el autor.
+
+    `author` es None solo si la cuenta no tiene perfil (no debería pasar tras el relleno de la 007).
+    """
+
+    author: AuthorOut | None
+    author_publication_count: int
+
+
+class AuthorCatalog(CamelModel):
+    items: list[AuthorCard]
+    page: int
+    has_more: bool
+
+
+class ProfilePage(CamelModel):
+    """GET /social/profiles/{code}: el perfil y una página de sus publicaciones públicas."""
+
+    profile: ProfileOut
+    items: list[PublicPublication]
+    page: int
+    has_more: bool
+
+
+class MyProfile(CamelModel):
+    """GET /social/me/profile: el perfil de la cuenta, o None si aún no tiene."""
+
+    profile: ProfileOut | None

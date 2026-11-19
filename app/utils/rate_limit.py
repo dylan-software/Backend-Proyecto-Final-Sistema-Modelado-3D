@@ -145,6 +145,16 @@ PUBLICATION_CHANGES_LIMIT_REACHED = (
 SOCIAL_READS_LIMIT_REACHED = (
     "Has consultado la red social demasiadas veces seguidas; espera un poco antes de volver a intentarlo."
 )
+PROFILE_CHANGES_LIMIT_REACHED = (
+    "Has cambiado tu nombre visible demasiadas veces en la última hora; espera un poco antes de volver a "
+    "intentarlo."
+)
+
+
+@lru_cache
+def profile_change_limiter():
+    """Cambios correctos del nombre visible del perfil público, por cuenta."""
+    return RateLimiter([(get_settings().profile_changes_per_hour, HOUR)])
 
 
 @lru_cache
@@ -155,7 +165,7 @@ def publication_change_limiter():
 
 @lru_cache
 def social_read_limiter():
-    """Lecturas del catálogo de la red social, por cuenta."""
+    """Lecturas de la red social (catálogo, catálogo por autor y perfiles), por cuenta."""
     return RateLimiter([(get_settings().social_reads_per_minute, MINUTE)])
 
 
@@ -168,8 +178,24 @@ def reset_all():
         import_limiter,
         publication_change_limiter,
         social_read_limiter,
+        profile_change_limiter,
     ):
         factory.cache_clear()
+
+
+def check_profile_change_quota(user_id):
+    """Lanza 429 si la cuenta ya cambió PROFILE_CHANGES_PER_HOUR veces su nombre visible en la última hora.
+
+    Solo comprueba; record_profile_change cuenta el cambio cuando ya se guardó.
+    """
+    wait = profile_change_limiter().retry_after(user_id)
+    if wait:
+        raise too_many_requests(wait, PROFILE_CHANGES_LIMIT_REACHED)
+
+
+def record_profile_change(user_id):
+    """Cuenta un cambio correcto del nombre visible de la cuenta."""
+    profile_change_limiter().record(user_id)
 
 
 def check_publication_change_quota(user_id):
@@ -188,7 +214,10 @@ def record_publication_change(user_id):
 
 
 def enforce_social_read(user_id):
-    """Cuenta una lectura del catálogo, o lanza 429 si la cuenta ya hizo SOCIAL_READS_PER_MINUTE."""
+    """Cuenta una lectura de la red social, o lanza 429 si la cuenta ya hizo SOCIAL_READS_PER_MINUTE.
+
+    Comparten cupo el catálogo, el catálogo por autor y la página de un perfil.
+    """
     limiter = social_read_limiter()
     wait = limiter.retry_after(user_id)
     if wait:

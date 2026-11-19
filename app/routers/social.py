@@ -4,6 +4,9 @@ Todas las rutas piden sesión. Un proyecto es privado hasta que su dueño lo pub
 copia congelada en el formato del archivo exportado (app/services/project_publication.py), y copiar una
 publicación es importarla con el mismo código que POST /rooms/import. Lo público nunca lleva correos,
 nombres de usuario ni ids de cuenta, de sala o de objeto: solo el código público aleatorio.
+
+Perfiles (CONTRATO-HABITA-PERFILES.md, parte A): catálogo por autor en /social/authors (el de
+/social/publications no cambia), página de un perfil y el nombre visible propio en /social/me/profile.
 """
 
 from datetime import datetime, timezone
@@ -23,13 +26,21 @@ from app.schemas.room import RoomImportResponse
 from app.schemas.social import (
     CATALOG_PAGE_SIZE,
     MAX_CATALOG_PAGE,
+    AuthorCard,
+    AuthorCatalog,
+    AuthorOut,
+    MyProfile,
     OwnPublication,
+    ProfileOut,
+    ProfilePage,
+    ProfileWrite,
     PublicationCatalog,
     PublicationWrite,
     PublicPublication,
     PublicRoom,
     RoomPublicationStatus,
 )
+from app.services import public_profile
 from app.services.project_import import MAX_IMPORT_BYTES, ProjectImportError
 from app.services.project_publication import (
     PUBLIC_CODE_PATTERN,
@@ -41,8 +52,10 @@ from app.services.project_publication import (
 )
 from app.utils.rate_limit import (
     check_import_quota,
+    check_profile_change_quota,
     check_publication_change_quota,
     enforce_social_read,
+    record_profile_change,
     record_publication_change,
 )
 
@@ -50,12 +63,16 @@ router = APIRouter(tags=["social"])
 
 ROOM_PUBLICATION_PATH = "/api/v1/spaces/rooms/{room_id}/publication"
 CATALOG_PATH = "/api/v1/social/publications"
+AUTHORS_PATH = "/api/v1/social/authors"
+PROFILES_PATH = "/api/v1/social/profiles"
+MY_PROFILE_PATH = "/api/v1/social/me/profile"
 
 RoomId = Path(gt=0)
 PublicCode = Path(pattern=PUBLIC_CODE_PATTERN)
 
 NOT_PUBLISHED = "Este proyecto no está publicado."
 NO_SUCH_PUBLICATION = "No existe una publicación pública con ese código."
+NO_SUCH_PROFILE = "Este perfil no existe."
 TOO_LARGE = (
     f"El proyecto es demasiado grande para publicarlo: como archivo pasaría de {MAX_IMPORT_BYTES // 1024} KB."
 )
@@ -114,6 +131,43 @@ async def _commit(session):
     except DATABASE_ERRORS as exc:
         await session.rollback()
         raise database_error(exc) from exc
+
+
+async def _ensure_profile(session, user_id):
+    try:
+        return await public_profile.ensure_profile(session, user_id)
+    except DATABASE_ERRORS as exc:
+        await session.rollback()
+        raise database_error(exc) from exc
+
+
+def profile_out(profile, publication_count, viewer):
+    """Perfil público campo a campo (nunca el user_id ni el id interno)."""
+    return ProfileOut(
+        code=profile.code,
+        display_name=profile.display_name,
+        publication_count=publication_count,
+        mine=profile.user_id == viewer,
+    )
+
+
+def author_card(row, profile, count, viewer):
+    """Tarjeta del catálogo por autor: la publicación, su autor (None sin perfil) y cuántas tiene."""
+    author = None
+    if profile is not None:
+        author = AuthorOut(
+            code=profile.code, display_name=profile.display_name, mine=profile.user_id == viewer
+        )
+    card = public_publication(row, viewer)
+    return AuthorCard(**dict(card), author=author, author_publication_count=count)
+
+
+async def _public_count(session, user_id):
+    try:
+        counts = await public_profile.public_counts(session, [user_id])
+    except DATABASE_ERRORS as exc:
+        raise database_error(exc) from exc
+    return counts.get(user_id, 0)
 
 
 async def _publication_of(session, room_id, user_id):
@@ -201,6 +255,8 @@ async def publish_room(
         # Un dict NUEVO: SQLAlchemy solo detecta el cambio de una columna JSON al reasignarla.
         row.document = document
         row.updated_at = now
+    # Quien publica tiene perfil (anónimo si aún no eligió nombre), en la misma transacción.
+    await _ensure_profile(session, current_user)
     await _commit(session)
     record_publication_change(current_user)
     return own_publication(row)
@@ -258,6 +314,115 @@ async def list_publications(
         page=page,
         has_more=len(rows) > CATALOG_PAGE_SIZE,
     )
+
+
+@router.get(AUTHORS_PATH, response_model=AuthorCatalog)
+async def list_authors(
+    page: int = Query(1, ge=1, le=MAX_CATALOG_PAGE),
+    session: AsyncSession = Depends(get_session),
+    current_user: str = Depends(get_current_user),
+):
+    """Catálogo por autor: una tarjeta por cuenta con su publicación pública más reciente (id más alto).
+
+    Autores de la publicación más nueva a la más vieja, 24 por página. Cada tarjeta lleva el autor (código
+    público y nombre visible; None si no tiene perfil) y cuántas publicaciones públicas tiene. Tres
+    consultas por página (tarjetas, perfiles y recuentos agrupados), sin N+1.
+
+    Raises:
+        HTTPException: 401 sin sesión válida, 422 page fuera de 1..100, 429 cupo de lecturas, 503/500 base
+            de datos.
+    """
+    enforce_social_read(current_user)
+    try:
+        rows = await public_profile.featured_publications(session, page, CATALOG_PAGE_SIZE)
+        shown = rows[:CATALOG_PAGE_SIZE]
+        user_ids = [row.user_id for row in shown]
+        profiles = await public_profile.profiles_of(session, user_ids)
+        counts = await public_profile.public_counts(session, user_ids)
+    except DATABASE_ERRORS as exc:
+        raise database_error(exc) from exc
+    return AuthorCatalog(
+        items=[
+            author_card(row, profiles.get(row.user_id), counts.get(row.user_id, 0), current_user)
+            for row in shown
+        ],
+        page=page,
+        has_more=len(rows) > CATALOG_PAGE_SIZE,
+    )
+
+
+@router.get(f"{PROFILES_PATH}/{{code}}", response_model=ProfilePage)
+async def get_profile(
+    code: str = PublicCode,
+    page: int = Query(1, ge=1, le=MAX_CATALOG_PAGE),
+    session: AsyncSession = Depends(get_session),
+    current_user: str = Depends(get_current_user),
+):
+    """Perfil público y sus publicaciones públicas, de la más nueva a la más vieja, 24 por página.
+
+    Un perfil sin publicaciones públicas responde 200 con la lista vacía. Solo lectura, también para su
+    dueño (`mine` dice si es suyo).
+
+    Raises:
+        HTTPException: 401 sin sesión válida, 422 código o page con otra forma, 429 cupo de lecturas, 404
+            el código no existe, 503/500 base de datos.
+    """
+    enforce_social_read(current_user)
+    try:
+        profile = await public_profile.profile_by_code(session, code)
+        if profile is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, NO_SUCH_PROFILE)
+        rows = await public_profile.profile_publications(session, profile.user_id, page, CATALOG_PAGE_SIZE)
+        counts = await public_profile.public_counts(session, [profile.user_id])
+    except DATABASE_ERRORS as exc:
+        raise database_error(exc) from exc
+    return ProfilePage(
+        profile=profile_out(profile, counts.get(profile.user_id, 0), current_user),
+        items=[public_publication(row, current_user) for row in rows[:CATALOG_PAGE_SIZE]],
+        page=page,
+        has_more=len(rows) > CATALOG_PAGE_SIZE,
+    )
+
+
+@router.get(MY_PROFILE_PATH, response_model=MyProfile)
+async def get_my_profile(
+    session: AsyncSession = Depends(get_session),
+    current_user: str = Depends(get_current_user),
+):
+    """El perfil de la cuenta, o `profile: null` si aún no tiene. No crea nada.
+
+    Raises:
+        HTTPException: 401 sin sesión válida, 503/500 base de datos.
+    """
+    try:
+        profile = await public_profile.profile_of(session, current_user)
+    except DATABASE_ERRORS as exc:
+        raise database_error(exc) from exc
+    if profile is None:
+        return MyProfile(profile=None)
+    return MyProfile(profile=profile_out(profile, await _public_count(session, current_user), current_user))
+
+
+@router.patch(MY_PROFILE_PATH, response_model=ProfileOut)
+async def update_my_profile(
+    body: ProfileWrite,
+    session: AsyncSession = Depends(get_session),
+    current_user: str = Depends(get_current_user),
+):
+    """Cambia el nombre visible (null o vacío = anónimo); crea el perfil si la cuenta aún no tiene.
+
+    El código público no cambia nunca. Solo los cambios guardados cuentan en PROFILE_CHANGES_PER_HOUR.
+
+    Raises:
+        HTTPException: 401 sin sesión válida, 422 cuerpo inválido (sin eco), 429 cupo de cambios, 503/500
+            base de datos.
+    """
+    check_profile_change_quota(current_user)
+    profile = await _ensure_profile(session, current_user)
+    public_profile.set_display_name(profile, body.display_name)
+    await _commit(session)
+    record_profile_change(current_user)
+    return profile_out(profile, await _public_count(session, current_user), current_user)
 
 
 @router.post(
